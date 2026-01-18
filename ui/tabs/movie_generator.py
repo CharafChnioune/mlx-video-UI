@@ -16,10 +16,6 @@ class MovieGeneratorTabComponents:
     script_mode: gr.Dropdown
     story_structure: gr.Dropdown
     pacing: gr.Dropdown
-    style_notes: gr.Textbox
-    audio_style: gr.Textbox
-    character_notes: gr.Textbox
-    setting_notes: gr.Textbox
     enhance_scenes_with_gemma: gr.Checkbox
     generate_scenes_btn: gr.Button
     script_generation_status: gr.Textbox
@@ -121,8 +117,7 @@ def build_movie_generator_tab(
                     maximum=max_scenes,
                 )
 
-                with gr.Accordion("Movie Bible", open=False):
-                    gr.Markdown("Keep these consistent across scenes for a Hollywood feel.")
+                with gr.Row():
                     story_structure = gr.Dropdown(
                         choices=[
                             "Three-act (Hollywood)",
@@ -133,6 +128,7 @@ def build_movie_generator_tab(
                         ],
                         value="Three-act (Hollywood)",
                         label="Story Structure",
+                        scale=1,
                     )
                     pacing = gr.Dropdown(
                         choices=[
@@ -143,26 +139,7 @@ def build_movie_generator_tab(
                         value="Standard (12s avg)",
                         label="Pacing",
                         info="Controls average scene duration and total scenes",
-                    )
-                    style_notes = gr.Textbox(
-                        label="Visual Style",
-                        placeholder="cinematic, shallow depth of field, anamorphic lens, film grain, warm palette",
-                        lines=2,
-                    )
-                    audio_style = gr.Textbox(
-                        label="Audio Style",
-                        placeholder="subtle ambient score, realistic foley, city soundscape, minimal dialogue",
-                        lines=2,
-                    )
-                    character_notes = gr.Textbox(
-                        label="Main Characters",
-                        placeholder="Name, role, relationships, voice/accent",
-                        lines=2,
-                    )
-                    setting_notes = gr.Textbox(
-                        label="Setting / World",
-                        placeholder="time period, locations, mood, key props",
-                        lines=2,
+                        scale=1,
                     )
 
                 gr.Markdown("### AI Scene Writer (LLM + Enhancer)")
@@ -197,9 +174,18 @@ def build_movie_generator_tab(
 
                 with gr.Accordion("Scene Editor", open=True):
                     scenes_dataframe = gr.Dataframe(
-                        headers=["#", "Description", "Duration (sec)", "Status"],
-                        datatype=["number", "str", "number", "str"],
-                        column_count=(4, "fixed"),
+                        headers=[
+                            "#",
+                            "Description",
+                            "Duration (sec)",
+                            "Status",
+                            "Visual Style",
+                            "Audio Style",
+                            "Characters",
+                            "Setting / World",
+                        ],
+                        datatype=["number", "str", "number", "str", "str", "str", "str", "str"],
+                        column_count=(8, "fixed"),
                         row_count=(0, "dynamic"),
                         interactive=True,
                         wrap=True,
@@ -389,10 +375,6 @@ def build_movie_generator_tab(
         script_mode=script_mode,
         story_structure=story_structure,
         pacing=pacing,
-        style_notes=style_notes,
-        audio_style=audio_style,
-        character_notes=character_notes,
-        setting_notes=setting_notes,
         enhance_scenes_with_gemma=enhance_scenes_with_gemma,
         generate_scenes_btn=generate_scenes_btn,
         script_generation_status=script_generation_status,

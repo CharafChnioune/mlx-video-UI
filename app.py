@@ -214,10 +214,6 @@ DEFAULT_SETTINGS = {
         "script_mode": "Auto (recommended)",
         "story_structure": "Three-act (Hollywood)",
         "pacing": "Standard (12s avg)",
-        "style_notes": "",
-        "audio_style": "",
-        "character_notes": "",
-        "setting_notes": "",
         "use_continuity": True,
         "continuity_strength": 0.7,
         "enhance_prompts": True,
@@ -310,10 +306,6 @@ def load_all_settings():
         s["movie"]["script_mode"],
         s["movie"]["story_structure"],
         s["movie"]["pacing"],
-        s["movie"]["style_notes"],
-        s["movie"]["audio_style"],
-        s["movie"]["character_notes"],
-        s["movie"]["setting_notes"],
         s["movie"]["use_continuity"],
         s["movie"]["continuity_strength"],
         s["movie"]["enhance_prompts"],
@@ -337,8 +329,10 @@ OUTPUT FORMAT (JSON array):
   {
     "description": "Full scene description following LTX-2 format",
     "duration": 8,
-    "visual": "camera, lighting, subject, environment",
-    "audio": "ambient, foley, music, speech with language/accent"
+    "visual_style": "cinematic look, lens, palette, grain, depth of field",
+    "audio_style": "score, foley, soundscape, dialogue style",
+    "characters": "names, roles, relationships, voice/accent",
+    "setting": "time period, locations, mood, key props"
   }
 ]
 
@@ -377,26 +371,33 @@ RULES:
 4. Ensure continuity between scenes
 5. Be factual - describe what is seen/heard, no interpretation
 6. Include ACTUAL spoken dialogue, not just descriptions of speech
+7. Fill visual_style, audio_style, characters, setting for every scene
 
 EXAMPLE for theme "A day in the forest":
 [
   {
     "description": "A misty forest at dawn, golden sunlight filtering through dense pine trees, illuminating particles floating in the air. Camera slowly pans across moss-covered rocks and ferns glistening with dew. Audio: birds singing in the canopy, gentle rustling of leaves, distant stream trickling over rocks, no music.",
     "duration": 10,
-    "visual": "slow pan, golden hour lighting through trees, misty atmosphere",
-    "audio": "birdsong, rustling leaves, distant stream, no music"
+    "visual_style": "slow pan, golden hour light, misty atmosphere, shallow depth of field",
+    "audio_style": "birdsong, rustling leaves, distant stream, no music",
+    "characters": "none",
+    "setting": "dawn forest, mossy rocks, dew, cool air"
   },
   {
     "description": "Close-up of a spider web covered in dewdrops, each drop catching morning light like tiny prisms. Gentle breeze causes subtle movement, camera static with shallow depth of field. Audio: soft chirping of crickets, single bird call echoing, light wind, no music.",
     "duration": 8,
-    "visual": "static close-up, shallow DOF, backlit dewdrops",
-    "audio": "crickets chirping, bird call, gentle wind"
+    "visual_style": "static macro close-up, shallow DOF, backlit dewdrops",
+    "audio_style": "crickets chirping, bird call, gentle wind",
+    "characters": "none",
+    "setting": "forest floor, dew-covered web, early morning light"
   },
   {
     "description": "Wide shot of a forest clearing, a deer grazing peacefully in tall grass. Soft afternoon light creates long shadows, camera slowly zooms in. Audio: deer hooves stepping softly on grass, birds chirping overhead, distant woodpecker tapping, wind rustling through tall grass.",
     "duration": 12,
-    "visual": "wide shot with slow zoom, afternoon soft light, long shadows",
-    "audio": "soft hoofsteps, birdsong, woodpecker, wind in grass"
+    "visual_style": "wide shot, slow zoom, soft afternoon light, long shadows",
+    "audio_style": "soft hoofsteps, birdsong, woodpecker, wind in grass",
+    "characters": "deer (wild animal)",
+    "setting": "forest clearing, tall grass, afternoon"
   }
 ]
 
@@ -405,8 +406,10 @@ EXAMPLE with dialogue for theme "A woman reunites with her hometown":
   {
     "description": "A woman with long dark hair stands on a cliff overlooking the ocean at sunset. She turns to the camera and says: 'I never thought I would see this place again.' in a gentle American accent. Camera slowly pushes in on her face. Audio: ocean waves crashing, seagulls calling, wind.",
     "duration": 10,
-    "visual": "medium shot with slow push-in, golden hour backlit",
-    "audio": "ocean waves, seagulls, wind, spoken dialogue"
+    "visual_style": "medium shot, slow push-in, golden hour backlight, film grain",
+    "audio_style": "ocean waves, seagulls, wind, spoken dialogue",
+    "characters": "woman, returning to hometown, gentle American accent",
+    "setting": "sunset cliff, ocean horizon, salty wind"
   }
 ]"""
 
@@ -426,9 +429,14 @@ If a main character was described (from reference image), ensure this character:
 - Is referred to by the same terms throughout all scenes
 - Include the full character description at the START of scenes where they appear
 
-FORMAT: Return ONLY valid JSON: {"description": "...", "duration": N}
+FORMAT: Return ONLY valid JSON: {"description": "...", "duration": N, "visual_style": "...", "audio_style": "...", "characters": "...", "setting": "..."}
 - description: Detailed visual+audio description (50-150 words)
 - duration: Scene length in seconds (1-20)
+- visual_style: lens, palette, grain, depth of field, lighting vibe
+- audio_style: score/foley/soundscape style and intensity
+- characters: names, roles, relationships, voice/accent
+- setting: time period, location, mood, key props
+Fill every field for each scene.
 
 DESCRIPTION GUIDELINES (per LTX-2 paper):
 - Start with subject and action
@@ -1921,35 +1929,11 @@ def get_pacing_seconds(pacing: str | None) -> int:
     return MOVIE_PACING_PRESETS["Standard (12s avg)"]
 
 
-def build_movie_bible(
-    structure: str,
-    pacing: str,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
-) -> str:
-    """Build a compact movie bible for LLM prompts."""
-    parts = []
-    if structure and structure != "None":
-        parts.append(f"Structure: {structure}")
-    if pacing:
-        parts.append(f"Pacing: {pacing}")
-    if style_notes:
-        parts.append(f"Visual style: {style_notes}")
-    if audio_style:
-        parts.append(f"Audio style: {audio_style}")
-    if character_notes:
-        parts.append(f"Characters: {character_notes}")
-    if setting_notes:
-        parts.append(f"Setting: {setting_notes}")
-    return "\n".join(parts) if parts else "None"
-
-
 def build_scene_prompt(
     theme: str,
     num_scenes: int,
-    movie_bible: str,
+    structure: str,
+    pacing: str,
     story_summary: str,
     recent_scenes: list[dict],
     pacing_seconds: int,
@@ -1960,10 +1944,12 @@ def build_scene_prompt(
         recent_lines = [f"- {s.get('description', '')}" for s in recent_scenes]
         recent_text = "\n".join(recent_lines)
 
+    structure_text = structure if structure and structure != "None" else "None"
+
     return f"""Movie theme: {theme}
 
-Movie bible:
-{movie_bible}
+Story structure: {structure_text}
+Pacing: {pacing}
 
 Story so far (summary):
 {story_summary or "None"}
@@ -1973,18 +1959,19 @@ Recent scenes:
 
 Create EXACTLY {num_scenes} new scenes that continue the story.
 Each scene MUST include:
-- Visual description (subject, action, camera movement, lighting)
-- Audio description (ambient, foley, music, dialogue + language/accent if any)
-- Specific characters by name and setting details (time/place/props)
-
-If any movie bible section is missing, invent it and keep it consistent across scenes.
+- description: full visual + audio description (subject, action, camera movement, lighting, sound)
+- visual_style: cinematic look (lens, palette, grain, depth of field)
+- audio_style: score/foley/soundscape style and intensity
+- characters: names, roles, relationships, voice/accent
+- setting: time period, locations, mood, key props
 
 Duration rules:
 - Aim for ~{pacing_seconds}s per scene
 - Hard max: {MAX_SCENE_DURATION}s
 - Use integers for duration
 
-Output ONLY a valid JSON array of objects with "description" and "duration".
+Output ONLY a valid JSON array of objects with keys:
+"description", "duration", "visual_style", "audio_style", "characters", "setting".
 """
 
 
@@ -2168,7 +2155,11 @@ def scenes_to_dataframe(scenes: list[dict]) -> list[list]:
             i + 1,  # Scene number
             scene.get("description", ""),
             scene.get("duration", DEFAULT_SCENE_DURATION),
-            scene.get("status", "pending")
+            scene.get("status", "pending"),
+            scene.get("visual_style", ""),
+            scene.get("audio_style", ""),
+            scene.get("characters", ""),
+            scene.get("setting", ""),
         ])
     return result
 
@@ -2212,9 +2203,39 @@ def dataframe_to_scenes(df_data) -> list[dict]:
             scenes.append({
                 "description": str(row[1]) if row[1] else "",
                 "duration": duration,
-                "status": str(row[3]) if len(row) > 3 and row[3] else "pending"
+                "status": str(row[3]) if len(row) > 3 and row[3] else "pending",
+                "visual_style": str(row[4]) if len(row) > 4 and row[4] else "",
+                "audio_style": str(row[5]) if len(row) > 5 and row[5] else "",
+                "characters": str(row[6]) if len(row) > 6 and row[6] else "",
+                "setting": str(row[7]) if len(row) > 7 and row[7] else "",
             })
     return scenes
+
+
+def build_scene_generation_prompt(scene: dict) -> str:
+    """Build the final prompt text for a scene using per-scene fields."""
+    description = str(scene.get("description", "") or "").strip()
+    extras = []
+    visual_style = str(scene.get("visual_style", "") or "").strip()
+    audio_style = str(scene.get("audio_style", "") or "").strip()
+    characters = str(scene.get("characters", "") or "").strip()
+    setting = str(scene.get("setting", "") or "").strip()
+
+    if visual_style:
+        extras.append(f"Visual style: {visual_style}")
+    if audio_style:
+        extras.append(f"Audio style: {audio_style}")
+    if characters:
+        extras.append(f"Characters: {characters}")
+    if setting:
+        extras.append(f"Setting / World: {setting}")
+
+    if extras:
+        extra_text = "\n".join(extras)
+        if description:
+            return f"{description}\n\n{extra_text}"
+        return extra_text
+    return description
 
 
 def add_empty_scene(scenes: list[dict]) -> list[dict]:
@@ -2223,7 +2244,11 @@ def add_empty_scene(scenes: list[dict]) -> list[dict]:
     scenes.append({
         "description": "New scene - edit this description",
         "duration": DEFAULT_SCENE_DURATION,
-        "status": "pending"
+        "status": "pending",
+        "visual_style": "",
+        "audio_style": "",
+        "characters": "",
+        "setting": "",
     })
     return scenes
 
@@ -2523,10 +2548,6 @@ def generate_scenes_with_llm(
     model: str,
     structure: str,
     pacing: str,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
     prompt_enhancer_choice: str,
     story_summary: str = "",
     recent_scenes: list[dict] | None = None,
@@ -2548,19 +2569,12 @@ def generate_scenes_with_llm(
     Returns:
         List of scene dicts with description, duration, status
     """
-    movie_bible = build_movie_bible(
-        structure,
-        pacing,
-        style_notes,
-        audio_style,
-        character_notes,
-        setting_notes,
-    )
     pacing_seconds = get_pacing_seconds(pacing)
     user_prompt = build_scene_prompt(
         theme,
         num_scenes,
-        movie_bible,
+        structure,
+        pacing,
         story_summary,
         recent_scenes or [],
         pacing_seconds,
@@ -2644,7 +2658,11 @@ def generate_scenes_with_llm(
                     scenes.append({
                         "description": scene["description"],
                         "duration": duration,
-                        "status": "pending"
+                        "status": "pending",
+                        "visual_style": scene.get("visual_style", ""),
+                        "audio_style": scene.get("audio_style", ""),
+                        "characters": scene.get("characters", ""),
+                        "setting": scene.get("setting", ""),
                     })
 
             if scenes:
@@ -2690,10 +2708,6 @@ def generate_scenes_in_batches(
     model: str,
     structure: str,
     pacing: str,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
     prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
@@ -2730,10 +2744,6 @@ def generate_scenes_in_batches(
             model,
             structure,
             pacing,
-            style_notes,
-            audio_style,
-            character_notes,
-            setting_notes,
             prompt_enhancer_choice,
             story_summary=story_summary,
             recent_scenes=recent_scenes,
@@ -2845,125 +2855,6 @@ def extract_scene_json(response: str) -> dict | None:
     return None
 
 
-def extract_json_object(response: str) -> dict | None:
-    """Extract a JSON object from a response string."""
-    if not response:
-        return None
-    match = re.search(r'\{[\s\S]*\}', response)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-
-
-def generate_movie_bible(
-    theme: str,
-    provider: str,
-    model: str,
-    temperature: float,
-) -> dict:
-    """Generate a movie bible with style, audio, characters, and setting."""
-    prompt = f"""Create a concise movie bible for this film idea:
-
-{theme}
-
-Return ONLY valid JSON with keys:
-- visual_style: 1-2 sentences
-- audio_style: 1-2 sentences
-- characters: main characters with names, roles, relationships, voice/accent
-- setting: time period, locations, mood, key props
-"""
-    messages = [
-        {"role": "system", "content": "You create cinematic movie bibles."},
-        {"role": "user", "content": prompt},
-    ]
-    try:
-        if provider == "LM Studio":
-            resp = requests.post(
-                f"{LM_STUDIO_BASE}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": float(temperature),
-                    "max_tokens": 400,
-                },
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices or "message" not in choices[0]:
-                return {}
-            response = choices[0]["message"].get("content", "").strip()
-        elif provider == "Ollama":
-            resp = requests.post(
-                f"{OLLAMA_BASE}/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": float(temperature), "num_predict": 400},
-                },
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            response = data.get("message", {}).get("content", "").strip()
-        else:
-            return {}
-    except Exception as e:
-        print(f"[DEBUG] Movie bible error: {e}")
-        return {}
-
-    data = extract_json_object(response)
-    if isinstance(data, dict):
-        return data
-    return {}
-
-
-def auto_fill_movie_bible(
-    theme: str,
-    provider: str,
-    model: str | None,
-    temperature: float,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
-) -> tuple[str, str, str, str, str]:
-    """Auto-generate missing movie bible fields."""
-    missing = [
-        not style_notes.strip(),
-        not audio_style.strip(),
-        not character_notes.strip(),
-        not setting_notes.strip(),
-    ]
-    if not any(missing):
-        return style_notes, audio_style, character_notes, setting_notes, "Movie bible already set"
-
-    if provider not in VALID_LLM_PROVIDERS or not model:
-        gr.Warning("Set an LLM provider + model in Advanced Settings to auto-generate the movie bible.")
-        return style_notes, audio_style, character_notes, setting_notes, "Movie bible missing"
-
-    data = generate_movie_bible(theme, provider, model, temperature)
-    if not data:
-        gr.Warning("Movie bible generation failed; fill it manually.")
-        return style_notes, audio_style, character_notes, setting_notes, "Movie bible generation failed"
-
-    resolved_style = style_notes.strip() or data.get("visual_style", "").strip()
-    resolved_audio = audio_style.strip() or data.get("audio_style", "").strip()
-    resolved_characters = character_notes.strip() or data.get("characters", "").strip()
-    resolved_setting = setting_notes.strip() or data.get("setting", "").strip()
-
-    return (
-        resolved_style or style_notes,
-        resolved_audio or audio_style,
-        resolved_characters or character_notes,
-        resolved_setting or setting_notes,
-        "Movie bible auto-generated",
-    )
 
 
 def generate_scenes_sequentially(
@@ -2973,10 +2864,6 @@ def generate_scenes_sequentially(
     model: str,
     structure: str,
     pacing: str,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
     prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
@@ -3025,18 +2912,11 @@ def generate_scenes_sequentially(
             progress((i, num_scenes), desc=f"Generating scene {i+1}/{num_scenes}")
 
         recent_scenes = scenes[-context_limit:] if scenes else []
-        movie_bible = build_movie_bible(
-            structure,
-            pacing,
-            style_notes,
-            audio_style,
-            character_notes,
-            setting_notes,
-        )
         context = build_scene_prompt(
             theme,
             1,
-            movie_bible,
+            structure,
+            pacing,
             story_summary,
             recent_scenes,
             pacing_seconds,
@@ -3046,7 +2926,7 @@ def generate_scenes_sequentially(
         user_prompt = f"""{context}
 Now write Scene {i+1} of {num_scenes}.
 Continue the story naturally and maintain continuity.
-Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
+Return ONLY a JSON object: {{"description": "...", "duration": N, "visual_style": "...", "audio_style": "...", "characters": "...", "setting": "..."}}"""
 
         # Retry loop for robustness
         scene_generated = False
@@ -3115,7 +2995,11 @@ Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
                     scene = {
                         "description": scene_data["description"],
                         "duration": duration,
-                        "status": "pending"
+                        "status": "pending",
+                        "visual_style": scene_data.get("visual_style", ""),
+                        "audio_style": scene_data.get("audio_style", ""),
+                        "characters": scene_data.get("characters", ""),
+                        "setting": scene_data.get("setting", ""),
                     }
                     scenes.append(scene)
                     scene_generated = True
@@ -3189,10 +3073,6 @@ def regenerate_single_scene(
     model: str,
     structure: str,
     pacing: str,
-    style_notes: str,
-    audio_style: str,
-    character_notes: str,
-    setting_notes: str,
     prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True
 ) -> list[dict]:
@@ -3232,10 +3112,6 @@ def regenerate_single_scene(
         model,
         structure,
         pacing,
-        style_notes,
-        audio_style,
-        character_notes,
-        setting_notes,
         prompt_enhancer_choice,
         story_summary=context,
         recent_scenes=[],
@@ -3318,12 +3194,12 @@ def generate_movie_pipeline(
         yield [], None, None, "Error: No scenes", "", log("ERROR: No scenes to generate")
         return
 
-    # Validate scenes - filter out empty descriptions
+    # Validate scenes - filter out empty prompts
     valid_scenes = []
     for i, scene in enumerate(scenes):
-        desc = scene.get("description", "").strip()
-        if not desc:
-            log(f"WARNING: Scene {i+1} has empty description, skipping")
+        scene_prompt = build_scene_generation_prompt(scene).strip()
+        if not scene_prompt:
+            log(f"WARNING: Scene {i+1} has empty prompt text, skipping")
             continue
         valid_scenes.append(scene)
 
@@ -3338,7 +3214,7 @@ def generate_movie_pipeline(
     # Log all scene prompts that will be used
     yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("\n=== SCENE PROMPTS TO BE GENERATED ===")
     for i, scene in enumerate(scenes):
-        desc = scene.get("description", "")
+        desc = build_scene_generation_prompt(scene)
         duration = scene.get("duration", DEFAULT_SCENE_DURATION)
         yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Scene {i+1} ({duration}s): {desc[:80]}{'...' if len(desc) > 80 else ''}")
     yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("=" * 40)
@@ -3392,7 +3268,7 @@ def generate_movie_pipeline(
             return
 
         scene_num = i + 1
-        scene_desc = scene.get("description", "")
+        scene_desc = build_scene_generation_prompt(scene)
         scene_duration = scene.get("duration", DEFAULT_SCENE_DURATION)
         num_frames = min(481, int(scene_duration * fps) + 1)  # LTX-2 supports up to 481 frames (20 sec)
 
@@ -4090,10 +3966,6 @@ def create_ui():
             script_mode,
             structure,
             pacing,
-            style_notes,
-            audio_style,
-            character_notes,
-            setting_notes,
             enhance_gemma,
             current_scenes,
             provider,
@@ -4105,38 +3977,8 @@ def create_ui():
         ):
             if not theme.strip():
                 gr.Warning("Please enter a movie theme first!")
-                yield (
-                    current_scenes,
-                    scenes_to_dataframe(current_scenes),
-                    "Error: No theme provided",
-                    style_notes,
-                    audio_style,
-                    character_notes,
-                    setting_notes,
-                )
+                yield current_scenes, scenes_to_dataframe(current_scenes), "Error: No theme provided"
                 return
-
-            resolved_style, resolved_audio, resolved_characters, resolved_setting, bible_status = auto_fill_movie_bible(
-                theme,
-                provider,
-                model,
-                temperature,
-                style_notes,
-                audio_style,
-                character_notes,
-                setting_notes,
-            )
-
-            if bible_status == "Movie bible auto-generated":
-                yield (
-                    current_scenes,
-                    scenes_to_dataframe(current_scenes),
-                    bible_status,
-                    resolved_style,
-                    resolved_audio,
-                    resolved_characters,
-                    resolved_setting,
-                )
 
             mode = script_mode or "Auto (recommended)"
             num_scenes_int = int(num_scenes)
@@ -4154,10 +3996,6 @@ def create_ui():
                     model,
                     structure,
                     pacing,
-                    resolved_style,
-                    resolved_audio,
-                    resolved_characters,
-                    resolved_setting,
                     prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
@@ -4172,10 +4010,6 @@ def create_ui():
                     model,
                     structure,
                     pacing,
-                    resolved_style,
-                    resolved_audio,
-                    resolved_characters,
-                    resolved_setting,
                     prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
@@ -4187,15 +4021,7 @@ def create_ui():
             # Use the selected generator for live updates
             for scenes, status in generator:
                 df_data = scenes_to_dataframe(scenes) if scenes else []
-                yield (
-                    scenes,
-                    df_data,
-                    status,
-                    resolved_style,
-                    resolved_audio,
-                    resolved_characters,
-                    resolved_setting,
-                )
+                yield scenes, df_data, status
 
         movie.generate_scenes_btn.click(
             fn=on_generate_scenes_sequential,
@@ -4205,10 +4031,6 @@ def create_ui():
                 movie.script_mode,
                 movie.story_structure,
                 movie.pacing,
-                movie.style_notes,
-                movie.audio_style,
-                movie.character_notes,
-                movie.setting_notes,
                 movie.enhance_scenes_with_gemma,
                 movie.movie_scenes_state,
                 settings.llm_provider,
@@ -4217,15 +4039,7 @@ def create_ui():
                 settings.temperature,
                 settings.max_tokens,
             ],
-            outputs=[
-                movie.movie_scenes_state,
-                movie.scenes_dataframe,
-                movie.script_generation_status,
-                movie.style_notes,
-                movie.audio_style,
-                movie.character_notes,
-                movie.setting_notes,
-            ],
+            outputs=[movie.movie_scenes_state, movie.scenes_dataframe, movie.script_generation_status],
         )
 
         # Sync dataframe changes to state
@@ -4274,10 +4088,6 @@ def create_ui():
             model,
             structure,
             pacing,
-            style_notes,
-            audio_style,
-            character_notes,
-            setting_notes,
             prompt_enhancer_choice,
             enhance_gemma,
         ):
@@ -4293,10 +4103,6 @@ def create_ui():
                 model,
                 structure,
                 pacing,
-                style_notes,
-                audio_style,
-                character_notes,
-                setting_notes,
                 prompt_enhancer_choice,
                 enhance_gemma,
             )
@@ -4312,10 +4118,6 @@ def create_ui():
                 settings.llm_model,
                 movie.story_structure,
                 movie.pacing,
-                movie.style_notes,
-                movie.audio_style,
-                movie.character_notes,
-                movie.setting_notes,
                 settings.prompt_enhancer_choice,
                 movie.enhance_scenes_with_gemma,
             ],
@@ -4532,22 +4334,6 @@ def create_ui():
             lambda v: save_setting("movie", "pacing", v),
             inputs=[movie.pacing]
         )
-        movie.style_notes.change(
-            lambda v: save_setting("movie", "style_notes", v),
-            inputs=[movie.style_notes]
-        )
-        movie.audio_style.change(
-            lambda v: save_setting("movie", "audio_style", v),
-            inputs=[movie.audio_style]
-        )
-        movie.character_notes.change(
-            lambda v: save_setting("movie", "character_notes", v),
-            inputs=[movie.character_notes]
-        )
-        movie.setting_notes.change(
-            lambda v: save_setting("movie", "setting_notes", v),
-            inputs=[movie.setting_notes]
-        )
         movie.use_continuity.change(
             lambda v: save_setting("movie", "use_continuity", v),
             inputs=[movie.use_continuity]
@@ -4610,10 +4396,6 @@ def create_ui():
                 movie.script_mode,
                 movie.story_structure,
                 movie.pacing,
-                movie.style_notes,
-                movie.audio_style,
-                movie.character_notes,
-                movie.setting_notes,
                 movie.use_continuity,
                 movie.continuity_strength,
                 movie.enhance_prompts,
