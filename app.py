@@ -1358,39 +1358,26 @@ def enhance_prompt_with_llm(prompt: str, provider: str, model: str) -> str:
 
     gr.Info(f"Enhancing prompt met {provider}...")
 
-    # System message based on LTX-2 paper (Section 4.2):
-    # "Comprehensive yet factual, describing only what is seen and heard without emotional interpretation"
+    # System message that preserves user intent while adding prompt techniques
     system_message = """Je bent een video+audio prompt engineer voor het LTX-2 model.
 
-KRITIEK - Volg de LTX-2 paper richtlijnen:
-- Wees UITGEBREID maar FEITELIJK
-- Beschrijf ALLEEN wat gezien en gehoord wordt
-- GEEN emotionele interpretatie of subjectief commentaar
-- Beschrijf ZOWEL visuele ALS audio elementen
+KRITIEKE REGEL: BEHOUD DE OORSPRONKELIJKE INTENTIE VAN DE GEBRUIKER!
+- VOEG GEEN details toe die de gebruiker niet heeft gespecificeerd
+- Als de gebruiker "een vrouw" zegt, voeg GEEN haarkleur/leeftijd/kleding toe
+- Als de gebruiker "een auto" zegt, voeg GEEN kleur/merk/model toe
+- Gebruik alleen de informatie die de gebruiker heeft gegeven
 
-PROMPT STRUCTUUR (per LTX-2 paper):
-1. BEGIN met subject: "A woman with long dark hair...", "A vintage red car..."
-2. VOEG actie toe: "...walks through a sunlit garden...", "...drives down a winding road..."
-3. CAMERA beweging: "...camera slowly tracking alongside...", "...dolly forward...", "...static wide shot..."
-4. BELICHTING: "...soft golden hour lighting...", "...dramatic shadows...", "...blue hour ambiance..."
-5. AUDIO cues: "...birds singing, footsteps on gravel...", "...engine rumbling, wind noise..."
-6. WEES SPECIFIEK: NIET "ambient sounds" maar "distant traffic, wind through trees, church bells"
-7. SPRAAK: Vermeld taal EN accent: "speaks softly in British English", "whispers in French"
+JE TAAK: Voeg ALLEEN prompt-technieken toe:
+1. CAMERA beweging: tracking shot, pan, dolly, static wide shot, etc.
+2. BELICHTING: natural lighting, soft diffused light, golden hour (als niet gespecificeerd)
+3. AUDIO cues: ambient sounds passend bij de scene, no music (tenzij gevraagd)
+4. STRUCTUUR: Herformuleer naar subject → action → setting
 
-VISUELE ELEMENTEN:
-- Camera: static, pan left/right, zoom in/out, tracking shot, dolly, crane, handheld, orbit
-- Belichting: natural daylight, golden hour, blue hour, dramatic shadows, soft diffused, backlit, neon
-- Subject: gedetailleerde uiterlijk, specifieke acties, expressies
-- Omgeving: setting details, sfeer, weer, tijd van de dag
+VOORBEELD:
+INPUT: "een vrouw loopt in het bos"
+OUTPUT: "A woman walks through a forest, camera tracking alongside at eye level, natural daylight filtering through the trees. Audio: footsteps on forest floor, birds in the distance, gentle wind through leaves."
 
-AUDIO ELEMENTEN (LTX-2 ondersteunt stereo 24kHz):
-- Ambient: specifieke omgevingsgeluiden (wind door bladeren, ver verkeer, menigte gemompel)
-- Foley: precieze geluidseffecten (voetstappen op grind, ritselende stof, krakende deur)
-- Muziek: stijl, mood, instrumenten, of "no music" voor natuurlijke sfeer
-- Spraak: dialoog met taal EN accent (bijv. "male voice speaks calmly in American English")
-
-VOORBEELD INPUT: "een vrouw loopt in het bos"
-VOORBEELD OUTPUT: "A young woman with auburn hair walks along a forest path, camera tracking alongside at eye level, soft dappled sunlight filtering through the canopy. Audio: leaves crunching underfoot, birds singing in the distance, gentle wind rustling through branches, no music."
+NIET: "A young woman with auburn hair..." (voegt onnodige details toe!)
 
 Antwoord ALLEEN met de verbeterde prompt in het Engels, geen uitleg."""
 
@@ -1720,15 +1707,25 @@ def scenes_to_dataframe(scenes: list[dict]) -> list[list]:
     return result
 
 
-def dataframe_to_scenes(df_data: list[list]) -> list[dict]:
+def dataframe_to_scenes(df_data) -> list[dict]:
     """Convert Gradio dataframe back to scenes list.
 
+    Handles both pandas DataFrame and list[list] formats.
+
     Args:
-        df_data: List of lists from Gradio Dataframe
+        df_data: List of lists or pandas DataFrame from Gradio Dataframe
 
     Returns:
         List of scene dicts
     """
+    # Convert pandas DataFrame to list[list] if needed
+    if hasattr(df_data, 'values'):
+        # It's a pandas DataFrame - convert to list of lists
+        df_data = df_data.values.tolist()
+
+    if df_data is None or len(df_data) == 0:
+        return []
+
     scenes = []
     for row in df_data:
         if len(row) >= 3:
@@ -1913,7 +1910,8 @@ def generate_scenes_with_llm(
     model: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
-    max_tokens: int | None = None
+    max_tokens: int | None = None,
+    image_description: str | None = None
 ) -> list[dict]:
     """Generate scene descriptions from theme using external LLM, then enhance with Gemma.
 
@@ -1925,13 +1923,23 @@ def generate_scenes_with_llm(
         enhance_with_gemma: Whether to enhance each scene with Gemma after LLM generation
         temperature: LLM temperature
         max_tokens: Maximum tokens for response (None = no limit)
+        image_description: Description of what the reference image represents (if provided)
 
     Returns:
         List of scene dicts with description, duration, status
     """
+    # Build the user prompt with optional image context
+    image_context = ""
+    if image_description and image_description.strip():
+        image_context = f"""
+
+IMPORTANT - Reference Image Context:
+The user has provided a reference image. {image_description.strip()}
+When writing scenes, incorporate this visual reference naturally. Each scene should reference or include elements from the provided image where appropriate."""
+
     user_prompt = f"""Create exactly {num_scenes} scenes for a short film about:
 
-{theme}
+{theme}{image_context}
 
 Remember: Output ONLY a valid JSON array with {num_scenes} scene objects. Each object must have "description" and "duration" fields."""
 
@@ -2122,6 +2130,7 @@ def generate_scenes_sequentially(
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
     max_tokens: int | None = None,
+    image_description: str | None = None,
     progress=None
 ) -> Generator[tuple[list[dict], str], None, None]:
     """
@@ -2140,6 +2149,7 @@ def generate_scenes_sequentially(
         enhance_with_gemma: Whether to enhance each scene with Gemma after all are generated
         temperature: LLM temperature
         max_tokens: Maximum tokens for response (None = no limit)
+        image_description: Description of what the reference image represents (if provided)
         progress: Optional Gradio progress object
 
     Yields:
@@ -2164,6 +2174,11 @@ def generate_scenes_sequentially(
 
         # Build context from previous scenes
         context = f"Movie theme: {theme}\n\n"
+
+        # Add reference image context if provided
+        if image_description and image_description.strip():
+            context += f"=== REFERENCE IMAGE ===\nThe user has provided a reference image: {image_description.strip()}\nIncorporate this visual reference naturally in the scenes.\n=== END REFERENCE IMAGE ===\n\n"
+
         if scenes:
             context += "=== PREVIOUS SCENES (for story continuity) ===\n"
             for j, prev_scene in enumerate(scenes, 1):
@@ -2371,6 +2386,8 @@ def generate_movie_pipeline(
     enhance_prompt: bool,
     temperature: float,
     max_tokens: int,
+    input_image: str | None = None,
+    image_strength: float = 0.8,
     progress=gr.Progress()
 ):
     """Main pipeline for generating a movie from scenes.
@@ -2387,6 +2404,8 @@ def generate_movie_pipeline(
         enhance_prompt: Use Gemma to enhance prompts
         temperature: LLM temperature
         max_tokens: LLM max tokens
+        input_image: Optional reference image path for I2V generation
+        image_strength: Strength of input image influence (0.0-1.0)
 
     Yields:
         Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log)
@@ -2403,6 +2422,31 @@ def generate_movie_pipeline(
     if not scenes:
         yield [], None, None, "Error: No scenes", "", log("ERROR: No scenes to generate")
         return
+
+    # Validate scenes - filter out empty descriptions
+    valid_scenes = []
+    for i, scene in enumerate(scenes):
+        desc = scene.get("description", "").strip()
+        if not desc:
+            log(f"WARNING: Scene {i+1} has empty description, skipping")
+            continue
+        valid_scenes.append(scene)
+
+    if not valid_scenes:
+        yield [], None, None, "Error: All scenes have empty descriptions", "", log("ERROR: No valid scenes to generate. All scene descriptions are empty.")
+        return
+
+    # Replace scenes with validated list
+    scenes = valid_scenes
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Validated {len(scenes)} scenes with non-empty descriptions")
+
+    # Log all scene prompts that will be used
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("\n=== SCENE PROMPTS TO BE GENERATED ===")
+    for i, scene in enumerate(scenes):
+        desc = scene.get("description", "")
+        duration = scene.get("duration", DEFAULT_SCENE_DURATION)
+        yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Scene {i+1} ({duration}s): {desc[:80]}{'...' if len(desc) > 80 else ''}")
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("=" * 40)
 
     # Validate FFmpeg
     if not FFMPEG_INSTALLED:
@@ -2426,6 +2470,8 @@ def generate_movie_pipeline(
     gallery_images = []
     last_frame_path = None
     total_scenes = len(scenes)
+    failed_scenes = []  # Track scenes that failed after all retries
+    MAX_SCENE_RETRIES = 2  # Number of retry attempts per scene
 
     for i, scene in enumerate(scenes):
         # Check for cancellation (thread-safe)
@@ -2469,44 +2515,71 @@ def generate_movie_pipeline(
             "max_tokens": int(max_tokens),
         }
 
-        # Add I2V continuity if enabled and not first scene
-        if use_continuity and last_frame_path and os.path.exists(last_frame_path):
+        # Add I2V: Use reference image for first scene, or continuity for subsequent scenes
+        if i == 0 and input_image and os.path.exists(input_image):
+            # First scene: use the user's reference image
+            kwargs["image"] = input_image
+            kwargs["image_strength"] = image_strength
+            kwargs["image_frame_idx"] = 0
+            yield gallery_images, None, None, overall_status, scene_status, log(f"Using reference image: {os.path.basename(input_image)}")
+        elif use_continuity and last_frame_path and os.path.exists(last_frame_path):
+            # Subsequent scenes: use last frame for continuity
             kwargs["image"] = last_frame_path
             kwargs["image_strength"] = continuity_strength
             kwargs["image_frame_idx"] = 0
             yield gallery_images, None, None, overall_status, scene_status, log(f"Using I2V continuity (strength: {continuity_strength})")
 
-        try:
-            # Generate video
-            yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Generating video...", log("Generating video with audio...")
-            generate_video_with_audio(**kwargs)
+        # Retry loop for scene generation
+        scene_success = False
+        for attempt in range(MAX_SCENE_RETRIES + 1):
+            try:
+                # Generate video
+                if attempt > 0:
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Retry {attempt}...", log(f"Retry {attempt}/{MAX_SCENE_RETRIES} for scene {scene_num}...")
+                    # Use a new seed for retry
+                    kwargs["seed"] = random.randint(0, 2147483647)
 
-            if os.path.exists(video_path):
-                video_paths.append(video_path)
-                yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Video complete", log(f"Video saved: {video_path}")
+                yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Generating video...", log("Generating video with audio...")
+                generate_video_with_audio(**kwargs)
 
-                # Extract thumbnail for gallery
-                thumb_path = str(output_dir / f"thumb_{scene_num:02d}.jpg")
-                if extract_frame_ffmpeg(video_path, thumb_path, "first"):
-                    gallery_images.append(thumb_path)
-                    yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Complete", log("Thumbnail extracted")
+                if os.path.exists(video_path):
+                    video_paths.append(video_path)
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Video complete", log(f"Video saved: {video_path}")
 
-                # Extract last frame for continuity
-                if use_continuity:
-                    last_frame_path = str(output_dir / f"lastframe_{scene_num:02d}.jpg")
-                    if extract_frame_ffmpeg(video_path, last_frame_path, "last"):
-                        yield gallery_images, video_path, None, overall_status, scene_status, log("Last frame extracted for continuity")
-            else:
-                yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Failed", log(f"ERROR: Video not created")
+                    # Extract thumbnail for gallery
+                    thumb_path = str(output_dir / f"thumb_{scene_num:02d}.jpg")
+                    if extract_frame_ffmpeg(video_path, thumb_path, "first"):
+                        gallery_images.append(thumb_path)
+                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Complete", log("Thumbnail extracted")
 
-        except Exception as e:
-            yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Error", log(f"ERROR: {e}")
-            continue
+                    # Extract last frame for continuity
+                    if use_continuity:
+                        last_frame_path = str(output_dir / f"lastframe_{scene_num:02d}.jpg")
+                        if extract_frame_ffmpeg(video_path, last_frame_path, "last"):
+                            yield gallery_images, video_path, None, overall_status, scene_status, log("Last frame extracted for continuity")
+
+                    scene_success = True
+                    break  # Success - exit retry loop
+                else:
+                    raise Exception("Video file not created")
+
+            except Exception as e:
+                if attempt < MAX_SCENE_RETRIES:
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Error (will retry)", log(f"ERROR on attempt {attempt + 1}: {e}")
+                    continue
+                else:
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Failed", log(f"FAILED after {MAX_SCENE_RETRIES + 1} attempts: {e}")
+                    failed_scenes.append(scene_num)
+                    # Continue to next scene but track failure
 
     # Check for cancellation before merge (thread-safe)
     if _movie_generation_cancel_event.is_set():
         yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled before merge")
         return
+
+    # Report failed scenes if any
+    if failed_scenes:
+        yield gallery_images, None, None, "Merging videos...", "Some scenes failed", log(f"\nWARNING: Scenes {failed_scenes} failed after all retries")
 
     # Merge all videos
     if len(video_paths) > 0:
@@ -2516,7 +2589,10 @@ def generate_movie_pipeline(
         final_path = str(output_dir / "final_movie.mp4")
         if merge_videos_ffmpeg(video_paths, final_path, fps):
             progress(1.0, desc="Complete!")
-            yield gallery_images, None, final_path, f"Complete! {len(video_paths)} scenes merged", "Done!", log(f"Final movie: {final_path}")
+            success_msg = f"Complete! {len(video_paths)}/{total_scenes} scenes merged"
+            if failed_scenes:
+                success_msg += f" ({len(failed_scenes)} failed)"
+            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}")
         else:
             yield gallery_images, None, None, "Merge failed", "FFmpeg error", log("ERROR: Could not merge videos")
     else:
@@ -2974,50 +3050,75 @@ def create_ui():
                         with gr.Group():
                             movie_theme = gr.Textbox(
                                 label="Movie Theme / Idea",
-                                placeholder="Describe your movie idea...\n\nExample: A magical journey through an enchanted forest, from sunrise to moonlit night, following a glowing firefly.",
+                                placeholder="Describe your movie idea...\n\nExample: A magical journey through an enchanted forest, from sunrise to moonlit night, following a glowing firefly.\n\nTip: Upload a reference image below and describe what it represents in your prompt!",
                                 lines=4,
                                 max_lines=8
                             )
-                            # Duration presets for quick selection
-                            movie_duration_preset = gr.Dropdown(
-                                choices=[
-                                    "Custom",
-                                    "30 sec (Short clip)",
-                                    "1 min (Teaser)",
-                                    "3 min (Music video)",
-                                    "5 min (Short film)",
-                                    "10 min (Episode)",
-                                    "30 min (TV Episode)",
-                                    "1 hour (Feature)",
-                                    "1.5 hours (Standard film)",
-                                    "2 hours (Hollywood)",
-                                    "3 hours (Epic)"
-                                ],
-                                value="3 min (Music video)",
-                                label="Duration Preset"
+
+                        # Reference Image Section
+                        with gr.Accordion("🖼️ Reference Image (Optional)", open=False):
+                            gr.Markdown("*Upload an image and describe what it represents in your story*")
+                            movie_input_image = gr.Image(
+                                label="Reference Image",
+                                type="filepath",
+                                height=150
+                            )
+                            movie_image_description = gr.Textbox(
+                                label="What does this image represent?",
+                                placeholder="Examples:\n• 'This is the main character'\n• 'This is the setting/background'\n• 'This is the object that appears throughout the story'",
+                                lines=2,
+                                max_lines=4
                             )
                             with gr.Row():
-                                movie_duration = gr.Slider(
-                                    minimum=MIN_MOVIE_DURATION,
-                                    maximum=MAX_MOVIE_DURATION,
-                                    value=180,
-                                    step=5,
-                                    label="Target Duration (seconds)"
+                                movie_image_strength = gr.Slider(
+                                    minimum=0.0,
+                                    maximum=1.0,
+                                    value=0.8,
+                                    step=0.05,
+                                    label="Image Influence",
+                                    info="How strongly the image affects generation"
                                 )
-                                movie_duration_display = gr.Textbox(
-                                    value="3 min",
-                                    label="Duration",
-                                    interactive=False,
-                                    scale=0
-                                )
-                            num_scenes_display = gr.Number(
-                                value=12,
-                                label="Number of Scenes",
-                                precision=0,
-                                interactive=True,
-                                minimum=1,
-                                maximum=MAX_SCENES
+
+                        # Duration presets for quick selection
+                        movie_duration_preset = gr.Dropdown(
+                            choices=[
+                                "Custom",
+                                "30 sec (Short clip)",
+                                "1 min (Teaser)",
+                                "3 min (Music video)",
+                                "5 min (Short film)",
+                                "10 min (Episode)",
+                                "30 min (TV Episode)",
+                                "1 hour (Feature)",
+                                "1.5 hours (Standard film)",
+                                "2 hours (Hollywood)",
+                                "3 hours (Epic)"
+                            ],
+                            value="3 min (Music video)",
+                            label="Duration Preset"
+                        )
+                        with gr.Row():
+                            movie_duration = gr.Slider(
+                                minimum=MIN_MOVIE_DURATION,
+                                maximum=MAX_MOVIE_DURATION,
+                                value=180,
+                                step=5,
+                                label="Target Duration (seconds)"
                             )
+                            movie_duration_display = gr.Textbox(
+                                value="3 min",
+                                label="Duration",
+                                interactive=False,
+                                scale=0
+                            )
+                        num_scenes_display = gr.Number(
+                            value=12,
+                            label="Number of Scenes",
+                            precision=0,
+                            interactive=True,
+                            minimum=1,
+                            maximum=MAX_SCENES
+                        )
 
                         # AI Scene Writer Section - LLM for script + Gemma enhance
                         gr.Markdown("### AI Scene Writer (LLM + Gemma)")
@@ -3583,7 +3684,7 @@ def create_ui():
         )
 
         # Generate scenes sequentially with LLM + Gemma enhancement (live updates)
-        def on_generate_scenes_sequential(theme, num_scenes, provider, model, enhance_gemma, current_scenes, progress=gr.Progress()):
+        def on_generate_scenes_sequential(theme, num_scenes, provider, model, enhance_gemma, image_desc, current_scenes, progress=gr.Progress()):
             if not theme.strip():
                 gr.Warning("Please enter a movie theme first!")
                 yield current_scenes, scenes_to_dataframe(current_scenes), "Error: No theme provided"
@@ -3596,6 +3697,7 @@ def create_ui():
                 provider,
                 model,
                 enhance_with_gemma=enhance_gemma,
+                image_description=image_desc,
                 progress=progress
             ):
                 df_data = scenes_to_dataframe(scenes) if scenes else []
@@ -3606,7 +3708,7 @@ def create_ui():
             inputs=[
                 movie_theme, num_scenes_display,
                 llm_provider_movie, llm_model_movie,
-                enhance_scenes_with_gemma, movie_scenes_state
+                enhance_scenes_with_gemma, movie_image_description, movie_scenes_state
             ],
             outputs=[movie_scenes_state, scenes_dataframe, script_generation_status]
         )
@@ -3676,10 +3778,17 @@ def create_ui():
 
         # Generate movie
         def on_generate_movie(
-            scenes, width, height, fps,
+            scenes, df_data, width, height, fps,
             use_cont, cont_strength,
-            enhance, temp, max_tok
+            enhance, temp, max_tok,
+            ref_image, ref_image_strength
         ):
+            # CRITICAL: Explicitly sync dataframe to scenes before generation
+            # This ensures we use the user's edited descriptions, not stale state
+            if df_data is not None and len(df_data) > 0:
+                scenes = dataframe_to_scenes(df_data)
+                print(f"[SYNC] Synced {len(scenes)} scenes from dataframe")
+
             if not scenes:
                 gr.Warning("Generate scenes first!")
                 yield [], None, None, "Error: No scenes", "", "Generate scenes first before creating the movie."
@@ -3690,16 +3799,20 @@ def create_ui():
                 scenes,
                 int(width), int(height), int(fps),
                 use_cont, cont_strength,
-                enhance, temp, int(max_tok)
+                enhance, temp, int(max_tok),
+                input_image=ref_image,
+                image_strength=ref_image_strength
             ):
                 yield result
 
         generate_movie_btn.click(
             fn=on_generate_movie,
             inputs=[
-                movie_scenes_state, width_movie, height_movie, fps_movie,
+                movie_scenes_state, scenes_dataframe,  # Include dataframe for explicit sync
+                width_movie, height_movie, fps_movie,
                 use_continuity, continuity_strength,
-                enhance_prompts_movie, temperature_movie, max_tokens_movie
+                enhance_prompts_movie, temperature_movie, max_tokens_movie,
+                movie_input_image, movie_image_strength
             ],
             outputs=[
                 scene_preview_gallery, current_scene_video, final_movie_output,
