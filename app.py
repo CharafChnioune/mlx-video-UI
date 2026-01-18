@@ -160,6 +160,11 @@ DEFAULT_SCENE_DURATION = 6  # Default duration (increased from 4)
 MAX_SCENES = 5000  # Maximum number of scenes (very long films)
 MIN_MOVIE_DURATION = 6  # Minimum total movie duration in seconds
 MAX_MOVIE_DURATION = 86400  # Maximum 24 hours (practical limit)
+MOVIE_PACING_PRESETS = {
+    "Fast (8s avg)": 8,
+    "Standard (12s avg)": 12,
+    "Slow (16s avg)": 16,
+}
 
 # Script Storage Directory
 SCRIPTS_DIR = Path.home() / ".mlx-video-ui" / "scripts"
@@ -206,6 +211,13 @@ DEFAULT_SETTINGS = {
         "fps": 24,
         "resolution_preset": "1080p (1920x1088)",
         "tiling_mode": "auto",
+        "script_mode": "Auto (recommended)",
+        "story_structure": "Three-act (Hollywood)",
+        "pacing": "Standard (12s avg)",
+        "style_notes": "",
+        "audio_style": "",
+        "character_notes": "",
+        "setting_notes": "",
         "use_continuity": True,
         "continuity_strength": 0.7,
         "enhance_prompts": True,
@@ -295,6 +307,13 @@ def load_all_settings():
         s["movie"]["fps"],
         s["movie"]["resolution_preset"],
         s["movie"]["tiling_mode"],
+        s["movie"]["script_mode"],
+        s["movie"]["story_structure"],
+        s["movie"]["pacing"],
+        s["movie"]["style_notes"],
+        s["movie"]["audio_style"],
+        s["movie"]["character_notes"],
+        s["movie"]["setting_notes"],
         s["movie"]["use_continuity"],
         s["movie"]["continuity_strength"],
         s["movie"]["enhance_prompts"],
@@ -1895,9 +1914,146 @@ def apply_cfg_preset(preset: str):
 
 # ===== MOVIE GENERATOR HELPER FUNCTIONS =====
 
-def calculate_scenes_from_duration(total_duration: int) -> int:
+def get_pacing_seconds(pacing: str | None) -> int:
+    """Get average scene duration based on pacing selection."""
+    if pacing in MOVIE_PACING_PRESETS:
+        return MOVIE_PACING_PRESETS[pacing]
+    return MOVIE_PACING_PRESETS["Standard (12s avg)"]
+
+
+def build_movie_bible(
+    structure: str,
+    pacing: str,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
+) -> str:
+    """Build a compact movie bible for LLM prompts."""
+    parts = []
+    if structure and structure != "None":
+        parts.append(f"Structure: {structure}")
+    if pacing:
+        parts.append(f"Pacing: {pacing}")
+    if style_notes:
+        parts.append(f"Visual style: {style_notes}")
+    if audio_style:
+        parts.append(f"Audio style: {audio_style}")
+    if character_notes:
+        parts.append(f"Characters: {character_notes}")
+    if setting_notes:
+        parts.append(f"Setting: {setting_notes}")
+    return "\n".join(parts) if parts else "None"
+
+
+def build_scene_prompt(
+    theme: str,
+    num_scenes: int,
+    movie_bible: str,
+    story_summary: str,
+    recent_scenes: list[dict],
+    pacing_seconds: int,
+) -> str:
+    """Build a prompt for generating one or more scenes."""
+    recent_text = ""
+    if recent_scenes:
+        recent_lines = [f"- {s.get('description', '')}" for s in recent_scenes]
+        recent_text = "\n".join(recent_lines)
+
+    return f"""Movie theme: {theme}
+
+Movie bible:
+{movie_bible}
+
+Story so far (summary):
+{story_summary or "None"}
+
+Recent scenes:
+{recent_text or "None"}
+
+Create EXACTLY {num_scenes} new scenes that continue the story.
+Each scene MUST include:
+- Visual description (subject, action, camera movement, lighting)
+- Audio description (ambient, foley, music, dialogue + language/accent if any)
+
+Duration rules:
+- Aim for ~{pacing_seconds}s per scene
+- Hard max: {MAX_SCENE_DURATION}s
+- Use integers for duration
+
+Output ONLY a valid JSON array of objects with "description" and "duration".
+"""
+
+
+def summarize_story_so_far(
+    existing_summary: str,
+    new_scenes: list[dict],
+    provider: str,
+    model: str | None,
+    temperature: float,
+) -> str:
+    """Summarize story so far using the configured LLM."""
+    if provider not in VALID_LLM_PROVIDERS or not model:
+        return existing_summary
+
+    scene_lines = "\n".join([f"- {s.get('description', '')}" for s in new_scenes])
+    prompt = f"""Update the story summary in 6-8 sentences.
+
+Existing summary:
+{existing_summary or "None"}
+
+New scenes:
+{scene_lines}
+
+Return only the updated summary plus a short bullet list of current characters and locations."""
+
+    messages = [
+        {"role": "system", "content": "You summarize movie plots for continuity."},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        if provider == "LM Studio":
+            resp = requests.post(
+                f"{LM_STUDIO_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": float(temperature),
+                    "max_tokens": 400,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices or "message" not in choices[0]:
+                return existing_summary
+            response = choices[0]["message"].get("content", "").strip()
+        else:
+            resp = requests.post(
+                f"{OLLAMA_BASE}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": float(temperature), "num_predict": 400},
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            response = data.get("message", {}).get("content", "").strip()
+
+        return response or existing_summary
+    except Exception as e:
+        print(f"[DEBUG] Summary error: {e}")
+        return existing_summary
+
+
+def calculate_scenes_from_duration(total_duration: int, pacing: str) -> int:
     """Calculate number of scenes based on total movie duration."""
-    avg_scene_duration = (DEFAULT_SCENE_DURATION + MAX_SCENE_DURATION) / 2
+    avg_scene_duration = get_pacing_seconds(pacing)
     num_scenes = max(1, min(MAX_SCENES, int(total_duration / avg_scene_duration)))
     return num_scenes
 
@@ -2357,6 +2513,14 @@ def generate_scenes_with_llm(
     num_scenes: int,
     provider: str,
     model: str,
+    structure: str,
+    pacing: str,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
+    story_summary: str = "",
+    recent_scenes: list[dict] | None = None,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
     max_tokens: int | None = None,
@@ -2375,11 +2539,23 @@ def generate_scenes_with_llm(
     Returns:
         List of scene dicts with description, duration, status
     """
-    user_prompt = f"""Create exactly {num_scenes} scenes for a short film about:
-
-{theme}
-
-Remember: Output ONLY a valid JSON array with {num_scenes} scene objects. Each object must have "description" and "duration" fields."""
+    movie_bible = build_movie_bible(
+        structure,
+        pacing,
+        style_notes,
+        audio_style,
+        character_notes,
+        setting_notes,
+    )
+    pacing_seconds = get_pacing_seconds(pacing)
+    user_prompt = build_scene_prompt(
+        theme,
+        num_scenes,
+        movie_bible,
+        story_summary,
+        recent_scenes or [],
+        pacing_seconds,
+    )
 
     try:
         # Always use external LLM for script writing
@@ -2454,7 +2630,7 @@ Remember: Output ONLY a valid JSON array with {num_scenes} scene objects. Each o
             scenes = []
             for scene in scenes_data:
                 if isinstance(scene, dict) and "description" in scene:
-                    duration = scene.get("duration", DEFAULT_SCENE_DURATION)
+                    duration = scene.get("duration", pacing_seconds)
                     duration = max(1, min(MAX_SCENE_DURATION, int(duration)))
                     scenes.append({
                         "description": scene["description"],
@@ -2495,6 +2671,99 @@ Remember: Output ONLY a valid JSON array with {num_scenes} scene objects. Each o
     except Exception as e:
         gr.Warning(f"Scene generation error: {e}")
         return []
+
+
+def generate_scenes_in_batches(
+    theme: str,
+    num_scenes: int,
+    provider: str,
+    model: str,
+    structure: str,
+    pacing: str,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
+    enhance_with_gemma: bool = True,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+    progress=None,
+) -> Generator[tuple[list[dict], str], None, None]:
+    """Generate scenes in batches for long films."""
+    if not provider or provider == "None":
+        gr.Warning("Select an LLM provider first")
+        yield [], "Error: No LLM provider selected"
+        return
+    if not model:
+        gr.Warning("Select a model first")
+        yield [], "Error: No model selected"
+        return
+
+    scenes: list[dict] = []
+    story_summary = ""
+    batch_size = 20 if num_scenes <= 200 else 30
+    total_batches = (num_scenes + batch_size - 1) // batch_size
+
+    for batch_index in range(total_batches):
+        if progress:
+            progress((batch_index, total_batches), desc=f"Generating batch {batch_index + 1}/{total_batches}")
+
+        remaining = num_scenes - len(scenes)
+        count = min(batch_size, remaining)
+        recent_scenes = scenes[-6:] if scenes else []
+
+        batch_scenes = generate_scenes_with_llm(
+            theme,
+            count,
+            provider,
+            model,
+            structure,
+            pacing,
+            style_notes,
+            audio_style,
+            character_notes,
+            setting_notes,
+            story_summary=story_summary,
+            recent_scenes=recent_scenes,
+            enhance_with_gemma=False,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        if not batch_scenes:
+            yield scenes, f"Batch {batch_index + 1}: failed to generate scenes"
+            continue
+
+        scenes.extend(batch_scenes)
+
+        if num_scenes > 60:
+            story_summary = summarize_story_so_far(
+                story_summary,
+                batch_scenes,
+                provider,
+                model,
+                temperature,
+            )
+
+        yield scenes, f"Generated {len(scenes)}/{num_scenes} scenes"
+
+    if enhance_with_gemma and scenes:
+        yield scenes, "Enhancing all scenes..."
+        for i, scene in enumerate(scenes):
+            if progress:
+                progress((i, len(scenes)), desc=f"Enhancing scene {i + 1}/{len(scenes)}")
+            enhanced_desc = enhance_scene_description(
+                scene["description"],
+                provider,
+                model,
+                temperature=temperature,
+                max_tokens=int(max_tokens) if max_tokens else 512,
+            )
+            scenes[i]["description"] = enhanced_desc
+            scenes[i]["status"] = "enhanced"
+            yield scenes, f"Enhanced scene {i + 1}/{len(scenes)}"
+
+    yield scenes, "All scenes ready for generation!"
 
 
 def extract_scene_json(response: str) -> dict | None:
@@ -2568,6 +2837,12 @@ def generate_scenes_sequentially(
     num_scenes: int,
     provider: str,
     model: str,
+    structure: str,
+    pacing: str,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
     max_tokens: int | None = None,
@@ -2604,6 +2879,9 @@ def generate_scenes_sequentially(
         return
 
     scenes = []
+    story_summary = ""
+    context_limit = 6
+    pacing_seconds = get_pacing_seconds(pacing)
     MAX_RETRIES = 3
 
     # Step 1: Sequential Scene Generation
@@ -2611,19 +2889,28 @@ def generate_scenes_sequentially(
         if progress:
             progress((i, num_scenes), desc=f"Generating scene {i+1}/{num_scenes}")
 
-        # Build context from previous scenes
-        context = f"Movie theme: {theme}\n\n"
-
-        if scenes:
-            context += "=== PREVIOUS SCENES (for story continuity) ===\n"
-            for j, prev_scene in enumerate(scenes, 1):
-                context += f"Scene {j}: {prev_scene['description']}\n"
-            context += "\n=== END PREVIOUS SCENES ===\n\n"
+        recent_scenes = scenes[-context_limit:] if scenes else []
+        movie_bible = build_movie_bible(
+            structure,
+            pacing,
+            style_notes,
+            audio_style,
+            character_notes,
+            setting_notes,
+        )
+        context = build_scene_prompt(
+            theme,
+            1,
+            movie_bible,
+            story_summary,
+            recent_scenes,
+            pacing_seconds,
+        )
 
         # Build prompt for this scene
-        user_prompt = f"""{context}Now write Scene {i+1} of {num_scenes}.
-Continue the story naturally from the previous scenes.
-Maintain visual and narrative consistency.
+        user_prompt = f"""{context}
+Now write Scene {i+1} of {num_scenes}.
+Continue the story naturally and maintain continuity.
 Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
 
         # Retry loop for robustness
@@ -2688,7 +2975,7 @@ Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
                 scene_data = extract_scene_json(response)
 
                 if scene_data and "description" in scene_data:
-                    duration = scene_data.get("duration", DEFAULT_SCENE_DURATION)
+                    duration = scene_data.get("duration", pacing_seconds)
                     duration = max(1, min(MAX_SCENE_DURATION, int(duration)))
                     scene = {
                         "description": scene_data["description"],
@@ -2697,6 +2984,15 @@ Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
                     }
                     scenes.append(scene)
                     scene_generated = True
+
+                    if num_scenes > 60 and (i + 1) % 20 == 0:
+                        story_summary = summarize_story_so_far(
+                            story_summary,
+                            scenes[-20:],
+                            provider,
+                            model,
+                            temperature,
+                        )
 
                     # Yield progress update
                     yield scenes, f"Generated scene {i+1}/{num_scenes}"
@@ -2755,6 +3051,12 @@ def regenerate_single_scene(
     theme: str,
     provider: str,
     model: str,
+    structure: str,
+    pacing: str,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
     enhance_with_gemma: bool = True
 ) -> list[dict]:
     """Regenerate a single scene using LLM + enhancement.
@@ -2787,7 +3089,19 @@ def regenerate_single_scene(
 
     # Generate single scene with LLM + optional enhancement
     new_scenes = generate_scenes_with_llm(
-        context, 1, provider, model, enhance_with_gemma
+        theme,
+        1,
+        provider,
+        model,
+        structure,
+        pacing,
+        style_notes,
+        audio_style,
+        character_notes,
+        setting_notes,
+        story_summary=context,
+        recent_scenes=[],
+        enhance_with_gemma=enhance_with_gemma,
     )
 
     if new_scenes:
@@ -3508,29 +3822,46 @@ def create_ui():
             return f"{hours}h {mins}m" if mins else f"{hours} hour"
 
         # Duration preset change
-        def on_duration_preset_change(preset):
+        def on_duration_preset_change(preset, pacing):
             if preset == "Custom":
                 return gr.update(), gr.update(), gr.update()
             duration = DURATION_PRESET_MAP.get(preset, 30)
-            num_scenes = calculate_scenes_from_duration(duration)
+            num_scenes = calculate_scenes_from_duration(duration, pacing)
             display = format_duration(duration)
+            if num_scenes > 300:
+                gr.Warning("Very long films can take days to generate (hundreds of scenes).")
             return duration, display, num_scenes
 
         movie.movie_duration_preset.change(
             fn=on_duration_preset_change,
-            inputs=[movie.movie_duration_preset],
+            inputs=[movie.movie_duration_preset, movie.pacing],
             outputs=[movie.movie_duration, movie.movie_duration_display, movie.num_scenes_display],
         )
 
         # Auto-calculate number of scenes from duration (when slider changes)
-        def on_duration_change_movie(duration):
-            num_scenes = calculate_scenes_from_duration(int(duration))
+        def on_duration_change_movie(duration, pacing):
+            num_scenes = calculate_scenes_from_duration(int(duration), pacing)
             display = format_duration(int(duration))
+            if num_scenes > 300:
+                gr.Warning("Very long films can take days to generate (hundreds of scenes).")
             return num_scenes, display
 
         movie.movie_duration.change(
             fn=on_duration_change_movie,
-            inputs=[movie.movie_duration],
+            inputs=[movie.movie_duration, movie.pacing],
+            outputs=[movie.num_scenes_display, movie.movie_duration_display],
+        )
+
+        def on_pacing_change(pacing, duration):
+            num_scenes = calculate_scenes_from_duration(int(duration), pacing)
+            display = format_duration(int(duration))
+            if num_scenes > 300:
+                gr.Warning("Very long films can take days to generate (hundreds of scenes).")
+            return num_scenes, display
+
+        movie.pacing.change(
+            fn=on_pacing_change,
+            inputs=[movie.pacing, movie.movie_duration],
             outputs=[movie.num_scenes_display, movie.movie_duration_display],
         )
 
@@ -3618,10 +3949,19 @@ def create_ui():
         def on_generate_scenes_sequential(
             theme,
             num_scenes,
+            script_mode,
+            structure,
+            pacing,
+            style_notes,
+            audio_style,
+            character_notes,
+            setting_notes,
             enhance_gemma,
             current_scenes,
             provider,
             model,
+            temperature,
+            max_tokens,
             progress=gr.Progress(),
         ):
             if not theme.strip():
@@ -3629,15 +3969,52 @@ def create_ui():
                 yield current_scenes, scenes_to_dataframe(current_scenes), "Error: No theme provided"
                 return
 
-            # Use the sequential generator for live updates
-            for scenes, status in generate_scenes_sequentially(
-                theme,
-                int(num_scenes),
-                provider,
-                model,
-                enhance_with_gemma=enhance_gemma,
-                progress=progress,
-            ):
+            mode = script_mode or "Auto (recommended)"
+            num_scenes_int = int(num_scenes)
+            use_batch = False
+            if mode.startswith("Batch"):
+                use_batch = True
+            elif mode.startswith("Auto") and num_scenes_int > 80:
+                use_batch = True
+
+            generator = (
+                generate_scenes_in_batches(
+                    theme,
+                    num_scenes_int,
+                    provider,
+                    model,
+                    structure,
+                    pacing,
+                    style_notes,
+                    audio_style,
+                    character_notes,
+                    setting_notes,
+                    enhance_with_gemma=enhance_gemma,
+                    temperature=temperature,
+                    max_tokens=int(max_tokens),
+                    progress=progress,
+                )
+                if use_batch
+                else generate_scenes_sequentially(
+                    theme,
+                    num_scenes_int,
+                    provider,
+                    model,
+                    structure,
+                    pacing,
+                    style_notes,
+                    audio_style,
+                    character_notes,
+                    setting_notes,
+                    enhance_with_gemma=enhance_gemma,
+                    temperature=temperature,
+                    max_tokens=int(max_tokens),
+                    progress=progress,
+                )
+            )
+
+            # Use the selected generator for live updates
+            for scenes, status in generator:
                 df_data = scenes_to_dataframe(scenes) if scenes else []
                 yield scenes, df_data, status
 
@@ -3646,10 +4023,19 @@ def create_ui():
             inputs=[
                 movie.movie_theme,
                 movie.num_scenes_display,
+                movie.script_mode,
+                movie.story_structure,
+                movie.pacing,
+                movie.style_notes,
+                movie.audio_style,
+                movie.character_notes,
+                movie.setting_notes,
                 movie.enhance_scenes_with_gemma,
                 movie.movie_scenes_state,
                 settings.llm_provider,
                 settings.llm_model,
+                settings.temperature,
+                settings.max_tokens,
             ],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe, movie.script_generation_status],
         )
@@ -3692,13 +4078,37 @@ def create_ui():
         )
 
         # Regenerate single scene with LLM + optional enhancement
-        def on_regenerate_scene(scenes, index, theme, provider, model, enhance_gemma):
+        def on_regenerate_scene(
+            scenes,
+            index,
+            theme,
+            provider,
+            model,
+            structure,
+            pacing,
+            style_notes,
+            audio_style,
+            character_notes,
+            setting_notes,
+            enhance_gemma,
+        ):
             if not scenes:
                 gr.Warning("No scenes to regenerate")
                 return scenes, scenes_to_dataframe(scenes) if scenes else []
 
             new_scenes = regenerate_single_scene(
-                scenes, int(index), theme, provider, model, enhance_gemma
+                scenes,
+                int(index),
+                theme,
+                provider,
+                model,
+                structure,
+                pacing,
+                style_notes,
+                audio_style,
+                character_notes,
+                setting_notes,
+                enhance_gemma,
             )
             return new_scenes, scenes_to_dataframe(new_scenes)
 
@@ -3710,6 +4120,12 @@ def create_ui():
                 movie.movie_theme,
                 settings.llm_provider,
                 settings.llm_model,
+                movie.story_structure,
+                movie.pacing,
+                movie.style_notes,
+                movie.audio_style,
+                movie.character_notes,
+                movie.setting_notes,
                 movie.enhance_scenes_with_gemma,
             ],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
@@ -3913,6 +4329,34 @@ def create_ui():
             lambda v: save_setting("movie", "tiling_mode", v),
             inputs=[movie.tiling_mode]
         )
+        movie.script_mode.change(
+            lambda v: save_setting("movie", "script_mode", v),
+            inputs=[movie.script_mode]
+        )
+        movie.story_structure.change(
+            lambda v: save_setting("movie", "story_structure", v),
+            inputs=[movie.story_structure]
+        )
+        movie.pacing.change(
+            lambda v: save_setting("movie", "pacing", v),
+            inputs=[movie.pacing]
+        )
+        movie.style_notes.change(
+            lambda v: save_setting("movie", "style_notes", v),
+            inputs=[movie.style_notes]
+        )
+        movie.audio_style.change(
+            lambda v: save_setting("movie", "audio_style", v),
+            inputs=[movie.audio_style]
+        )
+        movie.character_notes.change(
+            lambda v: save_setting("movie", "character_notes", v),
+            inputs=[movie.character_notes]
+        )
+        movie.setting_notes.change(
+            lambda v: save_setting("movie", "setting_notes", v),
+            inputs=[movie.setting_notes]
+        )
         movie.use_continuity.change(
             lambda v: save_setting("movie", "use_continuity", v),
             inputs=[movie.use_continuity]
@@ -3972,6 +4416,13 @@ def create_ui():
                 movie.fps,
                 movie.resolution_preset,
                 movie.tiling_mode,
+                movie.script_mode,
+                movie.story_structure,
+                movie.pacing,
+                movie.style_notes,
+                movie.audio_style,
+                movie.character_notes,
+                movie.setting_notes,
                 movie.use_continuity,
                 movie.continuity_strength,
                 movie.enhance_prompts,

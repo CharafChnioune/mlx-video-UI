@@ -13,6 +13,13 @@ class MovieGeneratorTabComponents:
     movie_duration: gr.Slider
     movie_duration_display: gr.Textbox
     num_scenes_display: gr.Number
+    script_mode: gr.Dropdown
+    story_structure: gr.Dropdown
+    pacing: gr.Dropdown
+    style_notes: gr.Textbox
+    audio_style: gr.Textbox
+    character_notes: gr.Textbox
+    setting_notes: gr.Textbox
     enhance_scenes_with_gemma: gr.Checkbox
     generate_scenes_btn: gr.Button
     script_generation_status: gr.Textbox
@@ -114,10 +121,64 @@ def build_movie_generator_tab(
                     maximum=max_scenes,
                 )
 
+                with gr.Accordion("Movie Bible", open=False):
+                    gr.Markdown("Keep these consistent across scenes for a Hollywood feel.")
+                    story_structure = gr.Dropdown(
+                        choices=[
+                            "Three-act (Hollywood)",
+                            "Five-act (TV/Drama)",
+                            "Hero's Journey",
+                            "Episodic / Anthology",
+                            "None",
+                        ],
+                        value="Three-act (Hollywood)",
+                        label="Story Structure",
+                    )
+                    pacing = gr.Dropdown(
+                        choices=[
+                            "Fast (8s avg)",
+                            "Standard (12s avg)",
+                            "Slow (16s avg)",
+                        ],
+                        value="Standard (12s avg)",
+                        label="Pacing",
+                        info="Controls average scene duration and total scenes",
+                    )
+                    style_notes = gr.Textbox(
+                        label="Visual Style",
+                        placeholder="cinematic, shallow depth of field, anamorphic lens, film grain, warm palette",
+                        lines=2,
+                    )
+                    audio_style = gr.Textbox(
+                        label="Audio Style",
+                        placeholder="subtle ambient score, realistic foley, city soundscape, minimal dialogue",
+                        lines=2,
+                    )
+                    character_notes = gr.Textbox(
+                        label="Main Characters",
+                        placeholder="Name, role, relationships, voice/accent",
+                        lines=2,
+                    )
+                    setting_notes = gr.Textbox(
+                        label="Setting / World",
+                        placeholder="time period, locations, mood, key props",
+                        lines=2,
+                    )
+
                 gr.Markdown("### AI Scene Writer (LLM + Enhancer)")
                 gr.Markdown("*Step 1: LLM writes script | Step 2: Enhances each scene*")
                 gr.Markdown("LLM provider is set in Advanced Settings.")
                 with gr.Group():
+                    script_mode = gr.Dropdown(
+                        choices=[
+                            "Auto (recommended)",
+                            "Sequential (best continuity)",
+                            "Batch (fast for long films)",
+                        ],
+                        value="Auto (recommended)",
+                        label="Script Mode",
+                        info="Auto switches to batch for very long films",
+                    )
                     enhance_scenes_with_gemma = gr.Checkbox(
                         label="Enhance scenes (Step 2)",
                         value=True,
@@ -325,6 +386,13 @@ def build_movie_generator_tab(
         movie_duration=movie_duration,
         movie_duration_display=movie_duration_display,
         num_scenes_display=num_scenes_display,
+        script_mode=script_mode,
+        story_structure=story_structure,
+        pacing=pacing,
+        style_notes=style_notes,
+        audio_style=audio_style,
+        character_notes=character_notes,
+        setting_notes=setting_notes,
         enhance_scenes_with_gemma=enhance_scenes_with_gemma,
         generate_scenes_btn=generate_scenes_btn,
         script_generation_status=script_generation_status,
