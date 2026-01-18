@@ -9,9 +9,6 @@ import gradio as gr
 class MovieGeneratorTabComponents:
     movie_scenes_state: gr.State
     movie_theme: gr.Textbox
-    movie_input_image: gr.Image
-    movie_image_description: gr.Textbox
-    movie_image_strength: gr.Slider
     movie_duration_preset: gr.Dropdown
     movie_duration: gr.Slider
     movie_duration_display: gr.Textbox
@@ -39,6 +36,13 @@ class MovieGeneratorTabComponents:
     height: gr.Number
     fps: gr.Slider
     tiling_mode: gr.Dropdown
+    # LoRA components
+    lora_file: gr.File
+    lora_scale: gr.Slider
+    lora_dropdown: gr.Dropdown
+    lora_status: gr.Textbox
+    lora_state: gr.State
+    # Generation settings
     use_continuity: gr.Checkbox
     continuity_strength: gr.Slider
     enhance_prompts: gr.Checkbox
@@ -72,41 +76,11 @@ def build_movie_generator_tab(
                         placeholder=(
                             "Describe your movie idea...\n\n"
                             "Example: A magical journey through an enchanted forest, from "
-                            "sunrise to moonlit night, following a glowing firefly.\n\n"
-                            "Tip: Upload a reference image below and describe what it "
-                            "represents in your prompt!"
+                            "sunrise to moonlit night, following a glowing firefly."
                         ),
                         lines=4,
                         max_lines=8,
                     )
-
-                with gr.Accordion("🖼️ Reference Image (Optional)", open=False):
-                    gr.Markdown("*Upload an image and describe what it represents in your story*")
-                    movie_input_image = gr.Image(
-                        label="Reference Image",
-                        type="filepath",
-                        height=150,
-                    )
-                    movie_image_description = gr.Textbox(
-                        label="What does this image represent?",
-                        placeholder=(
-                            "Examples:\n"
-                            "• 'This is the main character'\n"
-                            "• 'This is the setting/background'\n"
-                            "• 'This is the object that appears throughout the story'"
-                        ),
-                        lines=2,
-                        max_lines=4,
-                    )
-                    with gr.Row():
-                        movie_image_strength = gr.Slider(
-                            minimum=0.0,
-                            maximum=1.0,
-                            value=0.8,
-                            step=0.05,
-                            label="Image Influence",
-                            info="How strongly the image affects generation",
-                        )
 
                 movie_duration_preset = gr.Dropdown(
                     choices=[
@@ -279,6 +253,37 @@ def build_movie_generator_tab(
                         label="VAE Tiling Mode",
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
+
+                with gr.Accordion("LoRA Settings", open=False):
+                    gr.Markdown("*Load LoRA adapters to customize LTX-2 video style*")
+                    lora_state = gr.State([])
+                    lora_file = gr.File(
+                        label="Upload LoRA (.safetensors)",
+                        file_types=[".safetensors"],
+                        file_count="multiple",
+                    )
+                    lora_scale = gr.Slider(
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=1.0,
+                        step=0.1,
+                        label="LoRA Scale",
+                        info="0=disabled, 1=normal, >1=stronger effect",
+                    )
+                    lora_dropdown = gr.Dropdown(
+                        choices=[],
+                        label="Found LoRAs",
+                        multiselect=True,
+                        interactive=True,
+                    )
+                    lora_status = gr.Textbox(
+                        label="LoRA Status",
+                        interactive=False,
+                        max_lines=2,
+                        placeholder="Upload or select LoRA files...",
+                    )
+
+                with gr.Group():
                     with gr.Row():
                         use_continuity = gr.Checkbox(
                             label="Scene Continuity (I2V)",
@@ -368,9 +373,6 @@ def build_movie_generator_tab(
     return MovieGeneratorTabComponents(
         movie_scenes_state=movie_scenes_state,
         movie_theme=movie_theme,
-        movie_input_image=movie_input_image,
-        movie_image_description=movie_image_description,
-        movie_image_strength=movie_image_strength,
         movie_duration_preset=movie_duration_preset,
         movie_duration=movie_duration,
         movie_duration_display=movie_duration_display,
@@ -398,6 +400,11 @@ def build_movie_generator_tab(
         height=height,
         fps=fps,
         tiling_mode=tiling_mode,
+        lora_file=lora_file,
+        lora_scale=lora_scale,
+        lora_dropdown=lora_dropdown,
+        lora_status=lora_status,
+        lora_state=lora_state,
         use_continuity=use_continuity,
         continuity_strength=continuity_strength,
         enhance_prompts=enhance_prompts,

@@ -10,6 +10,7 @@ class AdvancedSettingsTabComponents:
     cfg_preset: gr.Dropdown
     text_cfg: gr.Slider
     cross_modal_cfg: gr.Slider
+    prompt_enhancer_choice: gr.Dropdown
     enhance_prompt_checkbox: gr.Checkbox
     temperature: gr.Slider
     max_tokens: gr.Slider
@@ -51,12 +52,18 @@ def build_advanced_settings_tab(
                             info="Higher = stronger audio-video sync",
                         )
 
-                gr.Markdown("### Prompt Enhancement (Gemma)")
+                gr.Markdown("### Prompt Enhancement")
                 with gr.Group():
+                    prompt_enhancer_choice = gr.Dropdown(
+                        choices=["Gemma (Built-in)", "LLM (Ollama/LM Studio)"],
+                        value="Gemma (Built-in)",
+                        label="Prompt Enhancer",
+                        info="Kies welk model de prompts verbetert",
+                    )
                     enhance_prompt_checkbox = gr.Checkbox(
-                        label="Enable Gemma Enhancement",
+                        label="Enable Auto-Enhancement",
                         value=True,
-                        info="Use built-in Gemma 3 for prompt improvement",
+                        info="Automatisch prompts verbeteren bij generatie",
                     )
                     with gr.Row():
                         temperature = gr.Slider(
@@ -67,10 +74,10 @@ def build_advanced_settings_tab(
                             label="Temperature",
                         )
                         max_tokens = gr.Slider(
-                            minimum=128,
-                            maximum=1024,
-                            value=512,
-                            step=64,
+                            minimum=512,
+                            maximum=4096,
+                            value=2048,
+                            step=256,
                             label="Max Tokens",
                         )
 
@@ -115,6 +122,7 @@ def build_advanced_settings_tab(
         cfg_preset=cfg_preset,
         text_cfg=text_cfg,
         cross_modal_cfg=cross_modal_cfg,
+        prompt_enhancer_choice=prompt_enhancer_choice,
         enhance_prompt_checkbox=enhance_prompt_checkbox,
         temperature=temperature,
         max_tokens=max_tokens,
