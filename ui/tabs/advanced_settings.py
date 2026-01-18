@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import gradio as gr
+
+
+@dataclass
+class AdvancedSettingsTabComponents:
+    cfg_preset: gr.Dropdown
+    text_cfg: gr.Slider
+    cross_modal_cfg: gr.Slider
+    enhance_prompt_checkbox: gr.Checkbox
+    temperature: gr.Slider
+    max_tokens: gr.Slider
+    audio_sample_rate: gr.Radio
+    stereo_output: gr.Checkbox
+    num_inference_steps: gr.Slider
+    negative_prompt: gr.Textbox
+
+
+def build_advanced_settings_tab(
+    cfg_preset_values: dict[str, dict[str, float] | None],
+) -> AdvancedSettingsTabComponents:
+    with gr.Tab("Advanced Settings", id="settings"):
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### Classifier-Free Guidance (LTX-2)")
+                gr.Markdown("*Based on LTX-2 paper: optimal video s_t=3, s_m=3; audio s_t=7, s_m=3*")
+                with gr.Group():
+                    cfg_preset = gr.Dropdown(
+                        choices=list(cfg_preset_values.keys()),
+                        value="Balanced (Default)",
+                        label="CFG Preset",
+                    )
+                    with gr.Row():
+                        text_cfg = gr.Slider(
+                            minimum=1.0,
+                            maximum=10.0,
+                            value=3.0,
+                            step=0.5,
+                            label="Text Guidance (s_t)",
+                            info="Higher = stronger text prompt adherence",
+                        )
+                        cross_modal_cfg = gr.Slider(
+                            minimum=1.0,
+                            maximum=10.0,
+                            value=3.0,
+                            step=0.5,
+                            label="Cross-Modal Guidance (s_m)",
+                            info="Higher = stronger audio-video sync",
+                        )
+
+                gr.Markdown("### Prompt Enhancement (Gemma)")
+                with gr.Group():
+                    enhance_prompt_checkbox = gr.Checkbox(
+                        label="Enable Gemma Enhancement",
+                        value=True,
+                        info="Use built-in Gemma 3 for prompt improvement",
+                    )
+                    with gr.Row():
+                        temperature = gr.Slider(
+                            minimum=0.0,
+                            maximum=1.0,
+                            value=0.7,
+                            step=0.1,
+                            label="Temperature",
+                        )
+                        max_tokens = gr.Slider(
+                            minimum=128,
+                            maximum=1024,
+                            value=512,
+                            step=64,
+                            label="Max Tokens",
+                        )
+
+            with gr.Column(scale=1):
+                gr.Markdown("### Audio Output (LTX-2)")
+                with gr.Group():
+                    audio_sample_rate = gr.Radio(
+                        choices=[16000, 24000, 48000],
+                        value=24000,
+                        label="Sample Rate (Hz)",
+                        info="24kHz is LTX-2 default output",
+                    )
+                    stereo_output = gr.Checkbox(
+                        label="Stereo Output",
+                        value=True,
+                        info="LTX-2 supports 2-channel stereo audio",
+                    )
+
+                gr.Markdown("### Diffusion Settings")
+                with gr.Group():
+                    num_inference_steps = gr.Slider(
+                        minimum=10,
+                        maximum=100,
+                        value=50,
+                        step=5,
+                        label="Diffusion Steps",
+                        info=(
+                            "Minder stappen = sneller, meer = hogere kwaliteit "
+                            "(LTX-2 paper: ~18x sneller dan Wan 2.2)"
+                        ),
+                    )
+
+                gr.Markdown("### Other")
+                negative_prompt = gr.Textbox(
+                    label="Negative Prompt (NOT YET SUPPORTED)",
+                    placeholder="Not yet supported by mlx-video...",
+                    lines=2,
+                    info="mlx-video does not support negative prompts yet",
+                )
+
+    return AdvancedSettingsTabComponents(
+        cfg_preset=cfg_preset,
+        text_cfg=text_cfg,
+        cross_modal_cfg=cross_modal_cfg,
+        enhance_prompt_checkbox=enhance_prompt_checkbox,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        audio_sample_rate=audio_sample_rate,
+        stereo_output=stereo_output,
+        num_inference_steps=num_inference_steps,
+        negative_prompt=negative_prompt,
+    )

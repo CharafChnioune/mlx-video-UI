@@ -20,6 +20,10 @@ import requests
 from gradio.themes.base import Base
 from gradio.themes.utils import colors, fonts, sizes
 
+from ui.tabs.advanced_settings import build_advanced_settings_tab
+from ui.tabs.generation import build_generation_tab
+from ui.tabs.movie_generator import build_movie_generator_tab
+
 
 # ===== AURORA THEME - Premium Dark Theme with Glassmorphism =====
 class AuroraTheme(Base):
@@ -188,7 +192,14 @@ PROMPT STRUCTURE (per LTX-2 paper):
 4. LIGHTING: "...soft golden hour lighting...", "...dramatic shadows...", "...blue hour ambiance..."
 5. AUDIO cues: "...birds singing, footsteps on gravel...", "...engine rumbling, wind noise..."
 6. BE SPECIFIC: NOT "ambient sounds" but "distant traffic, wind through trees, church bells"
-7. SPEECH: Include language AND accent: "speaks softly in British English", "whispers in French"
+7. SPEECH/DIALOGUE: Include ACTUAL dialogue text that characters speak!
+
+SPEECH/DIALOGUE RULES (CRITICAL):
+- Include ACTUAL dialogue text that characters speak
+- Format: "Character says: 'Actual dialogue here'" with language/accent
+- Example: "The woman looks at the sunset and says: 'It's beautiful, isn't it?' in a soft British accent"
+- NOT just "speaks softly" but the actual words they say!
+- LTX-2 generates video WITH audio, so dialogue text is spoken by the model
 
 VISUAL ELEMENTS:
 - Camera: static, pan left/right, zoom in/out, tracking shot, dolly forward/backward, crane up/down, handheld, orbit
@@ -200,7 +211,7 @@ AUDIO ELEMENTS (LTX-2 supports stereo 24kHz):
 - Ambient: specific environmental sounds (wind through leaves, distant traffic, crowd murmur, ocean waves)
 - Foley: precise sound effects (footsteps on gravel, rustling fabric, door creaking, glass clinking)
 - Music: style, mood, instruments, or "no music" for natural atmosphere
-- Speech: dialogue with speaker description, language, AND accent (e.g., "male voice speaks calmly in American English")
+- Speech: ACTUAL dialogue with speaker description, language, AND accent (e.g., "male voice says: 'Hello there!' in American English")
 
 RULES:
 1. Output ONLY valid JSON array, no other text
@@ -208,6 +219,7 @@ RULES:
 3. Integrate visual AND audio naturally in description
 4. Ensure continuity between scenes
 5. Be factual - describe what is seen/heard, no interpretation
+6. Include ACTUAL spoken dialogue, not just descriptions of speech
 
 EXAMPLE for theme "A day in the forest":
 [
@@ -229,6 +241,16 @@ EXAMPLE for theme "A day in the forest":
     "visual": "wide shot with slow zoom, afternoon soft light, long shadows",
     "audio": "soft hoofsteps, birdsong, woodpecker, wind in grass"
   }
+]
+
+EXAMPLE with dialogue for theme "A woman reunites with her hometown":
+[
+  {
+    "description": "A woman with long dark hair stands on a cliff overlooking the ocean at sunset. She turns to the camera and says: 'I never thought I would see this place again.' in a gentle American accent. Camera slowly pushes in on her face. Audio: ocean waves crashing, seagulls calling, wind.",
+    "duration": 10,
+    "visual": "medium shot with slow push-in, golden hour backlit",
+    "audio": "ocean waves, seagulls, wind, spoken dialogue"
+  }
 ]"""
 
 # Sequential Scene Writer Prompt (for story continuity)
@@ -239,6 +261,13 @@ CRITICAL RULES:
 2. Maintain visual consistency: same characters, locations, lighting style
 3. Maintain narrative flow: actions have consequences, time progresses logically
 4. Each scene description must be self-contained but reference shared elements
+
+CHARACTER CONSISTENCY (VERY IMPORTANT):
+If a main character was described (from reference image), ensure this character:
+- Appears consistently in relevant scenes with the EXACT same physical description
+- Has the same hair color, eye color, clothing, and distinctive features each time
+- Is referred to by the same terms throughout all scenes
+- Include the full character description at the START of scenes where they appear
 
 FORMAT: Return ONLY valid JSON: {"description": "...", "duration": N}
 - description: Detailed visual+audio description (50-150 words)
@@ -251,6 +280,13 @@ DESCRIPTION GUIDELINES (per LTX-2 paper):
 - Add ambient audio and sound effects
 - Be factual, not emotional
 
+SPEECH/DIALOGUE RULES (CRITICAL):
+- Include ACTUAL dialogue text that characters speak
+- Format: "Character says: 'Actual dialogue here'" with language/accent
+- Example: "The woman smiles and says: 'Good morning!' in a warm French accent"
+- NOT just "speaks softly" but the actual words they say!
+- LTX-2 generates video WITH audio, so dialogue text will be spoken
+
 VISUAL ELEMENTS:
 - Camera: static, pan left/right, zoom in/out, tracking shot, dolly forward/backward, crane up/down, handheld, orbit
 - Lighting: natural daylight, golden hour, blue hour, dramatic shadows, soft diffused, backlit, neon/artificial
@@ -261,7 +297,7 @@ AUDIO ELEMENTS (LTX-2 supports stereo 24kHz):
 - Ambient: specific environmental sounds (wind, traffic, crowd, ocean)
 - Foley: precise sound effects (footsteps, rustling, doors, glass)
 - Music: style, mood, instruments, or "no music" for natural atmosphere
-- Speech: dialogue with speaker description, language, AND accent
+- Speech: ACTUAL dialogue with speaker description, language, AND accent (e.g., "she says: 'Hello!' in British English")
 """
 
 # LLM API endpoints
@@ -2388,6 +2424,8 @@ def generate_movie_pipeline(
     max_tokens: int,
     input_image: str | None = None,
     image_strength: float = 0.8,
+    character_description: str | None = None,
+    tiling_mode: str = "auto",
     progress=gr.Progress()
 ):
     """Main pipeline for generating a movie from scenes.
@@ -2406,6 +2444,8 @@ def generate_movie_pipeline(
         max_tokens: LLM max tokens
         input_image: Optional reference image path for I2V generation
         image_strength: Strength of input image influence (0.0-1.0)
+        character_description: Description of main character to inject into scene prompts
+        tiling_mode: VAE tiling mode for memory optimization
 
     Yields:
         Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log)
@@ -2484,6 +2524,10 @@ def generate_movie_pipeline(
         scene_duration = scene.get("duration", DEFAULT_SCENE_DURATION)
         num_frames = min(481, int(scene_duration * fps) + 1)  # LTX-2 supports up to 481 frames (20 sec)
 
+        # Inject character description into scene prompt for consistency
+        if character_description and character_description.strip():
+            scene_desc = f"[MAIN CHARACTER: {character_description.strip()}] {scene_desc}"
+
         overall_status = f"Movie: {scene_num}/{total_scenes} scenes"
         scene_status = f"Generating Scene {scene_num}..."
 
@@ -2513,6 +2557,7 @@ def generate_movie_pipeline(
             "enhance_prompt": enhance_prompt,
             "temperature": temperature,
             "max_tokens": int(max_tokens),
+            "tiling": tiling_mode,
         }
 
         # Add I2V: Use reference image for first scene, or continuity for subsequent scenes
@@ -2614,6 +2659,7 @@ def generate_video_ui(
     max_tokens: int,
     save_frames: bool,
     negative_prompt: str,
+    tiling_mode: str = "auto",
     progress=gr.Progress()
 ):
     """Generate video with audio using mlx-video."""
@@ -2667,7 +2713,7 @@ def generate_video_ui(
             "enhance_prompt": enhance_prompt,
             "temperature": temperature,
             "max_tokens": int(max_tokens),
-            # Note: tiling is not supported by generate_video_with_audio
+            "tiling": tiling_mode,
         }
 
         # Add image for I2V if provided
@@ -2781,644 +2827,22 @@ def create_ui():
             """)
 
         # Main Tabs
-        with gr.Tabs() as tabs:
-
-            # ===== GENERATION TAB =====
-            with gr.Tab("Generation", id="generation"):
-                with gr.Row():
-                    # Left column - Controls
-                    with gr.Column(scale=1):
-                        # Prompt section
-                        prompt = gr.Textbox(
-                            label="Video Prompt",
-                            placeholder="Describe the video you want to generate...\n\nExample: A serene ocean view at sunset, waves gently crashing on golden sand, seagulls flying in the distance",
-                            lines=4,
-                            max_lines=8,
-                            elem_classes="prompt-input"
-                        )
-
-                        with gr.Row():
-                            llm_provider = gr.Dropdown(
-                                choices=["None", "LM Studio", "Ollama"],
-                                value="None",
-                                label="LLM",
-                                scale=1
-                            )
-                            llm_model = gr.Dropdown(
-                                choices=[],
-                                label="Model",
-                                interactive=False,
-                                scale=2,
-                                allow_custom_value=True
-                            )
-                        with gr.Row():
-                            enhance_btn = gr.Button("Enhance Prompt", variant="secondary", size="sm", elem_classes="secondary-btn")
-                            clear_btn = gr.Button("Clear", variant="secondary", size="sm", elem_classes="secondary-btn")
-
-                        # Prompt Builder (Based on LTX-2 paper's optimal prompt structure)
-                        with gr.Accordion("Prompt Builder (LTX-2 Optimized)", open=False):
-                            gr.Markdown("*Build structured prompts following the LTX-2 paper's captioning system*")
-
-                            # Visual Section
-                            gr.Markdown("#### Visual Elements")
-                            with gr.Row():
-                                pb_camera = gr.Dropdown(
-                                    choices=CAMERA_MOTIONS,
-                                    value="Static",
-                                    label="Camera Motion",
-                                    scale=1
-                                )
-                                pb_lighting = gr.Dropdown(
-                                    choices=LIGHTING_OPTIONS,
-                                    value="Natural daylight",
-                                    label="Lighting",
-                                    scale=1
-                                )
-                            pb_environment = gr.Textbox(
-                                label="Environment",
-                                placeholder="forest, city street, interior room, beach...",
-                                lines=1
-                            )
-
-                            # Subject Section
-                            gr.Markdown("#### Subject")
-                            pb_subject = gr.Textbox(
-                                label="Subject Description",
-                                placeholder="A young woman with red hair, a golden retriever, a vintage car...",
-                                lines=1
-                            )
-                            pb_action = gr.Textbox(
-                                label="Action",
-                                placeholder="walks slowly, looks around, runs through the field...",
-                                lines=1
-                            )
-
-                            # Audio Section
-                            gr.Markdown("#### Audio Elements")
-                            with gr.Row():
-                                pb_ambient = gr.Textbox(
-                                    label="Ambient Sounds",
-                                    placeholder="birds chirping, distant traffic, crowd murmur...",
-                                    lines=1,
-                                    scale=1
-                                )
-                                pb_foley = gr.Textbox(
-                                    label="Foley/Effects",
-                                    placeholder="footsteps on gravel, rustling clothes, door creaking...",
-                                    lines=1,
-                                    scale=1
-                                )
-                            with gr.Row():
-                                pb_music = gr.Textbox(
-                                    label="Music",
-                                    placeholder="soft piano melody, no music, epic orchestral...",
-                                    lines=1,
-                                    scale=1
-                                )
-                                pb_speech = gr.Textbox(
-                                    label="Speech/Dialogue",
-                                    placeholder="whispers softly, speaks clearly, no dialogue...",
-                                    lines=1,
-                                    scale=1
-                                )
-                            # Language/Accent selectors (LTX-2 paper: "speaker, language, and accent identification")
-                            with gr.Row():
-                                pb_speech_language = gr.Dropdown(
-                                    choices=SPEECH_LANGUAGES,
-                                    value="No specific language",
-                                    label="Speech Language",
-                                    scale=1
-                                )
-                                pb_speech_accent = gr.Dropdown(
-                                    choices=SPEECH_ACCENTS,
-                                    value="No specific accent",
-                                    label="Speech Accent",
-                                    scale=1
-                                )
-
-                            build_prompt_btn = gr.Button("Build Prompt", variant="secondary", size="sm", elem_classes="secondary-btn")
-
-                        # Prompt Tips Panel (LTX-2 paper best practices)
-                        with gr.Accordion("LTX-2 Prompt Tips", open=False):
-                            gr.Markdown("""
-**Gebaseerd op het LTX-2 paper's captioning systeem:**
-
-1. **Begin met subject**: "A woman with long dark hair...", "A vintage red car..."
-2. **Voeg actie toe**: "...walks through a sunlit garden...", "...drives down a winding road..."
-3. **Camera beweging**: "...camera slowly tracking alongside...", "...dolly forward..."
-4. **Belichting**: "...soft golden hour lighting...", "...dramatic shadows..."
-5. **Audio cues**: "...birds singing, footsteps on gravel...", "...engine rumbling, wind noise..."
-6. **Wees specifiek**: Niet "ambient sounds", maar "distant traffic, wind through trees"
-7. **Spraak**: Vermeld taal en accent: "speaks softly in British English"
-
-**Voorbeeld prompt:**
-> A young woman with curly auburn hair walks through a misty forest, camera tracking alongside, golden hour lighting filtering through the trees. Audio: leaves crunching underfoot, distant bird calls, soft wind through branches, she hums quietly in French.
-""")
-
-                        # Video Settings
-                        gr.Markdown("### Video Settings")
-                        with gr.Row():
-                            resolution_preset = gr.Dropdown(
-                                choices=list(RESOLUTION_PRESETS.keys()),
-                                value="1080p (1920x1088)",
-                                label="Resolution",
-                                scale=1
-                            )
-                            duration_preset = gr.Dropdown(
-                                choices=list(DURATION_PRESETS.keys()),
-                                value="10 sec (241 frames)",
-                                label="Duration",
-                                scale=1
-                            )
-
-                        with gr.Row():
-                            width_slider = gr.Slider(
-                                minimum=256,
-                                maximum=3840,  # Up to 4K
-                                value=1920,
-                                step=64,
-                                label="Width"
-                            )
-                            height_slider = gr.Slider(
-                                minimum=256,
-                                maximum=2176,  # Up to 4K (2176 % 64 = 0)
-                                value=1088,
-                                step=64,
-                                label="Height"
-                            )
-
-                        with gr.Row():
-                            frames_slider = gr.Slider(
-                                minimum=9,
-                                maximum=481,  # LTX-2 supports up to 20 sec (481 frames @ 24fps)
-                                value=241,
-                                step=8,
-                                label="Frames"
-                            )
-                            fps_slider = gr.Slider(
-                                minimum=12,
-                                maximum=60,
-                                value=24,
-                                step=1,
-                                label="FPS"
-                            )
-
-                        # Hidden inputs for actual values (updated by presets/sliders)
-                        with gr.Row(visible=False):
-                            width = gr.Number(value=1920, precision=0)
-                            height = gr.Number(value=1088, precision=0)
-                            num_frames = gr.Number(value=241, precision=0)
-
-                        # Seed and options row
-                        with gr.Row():
-                            seed = gr.Number(
-                                value=42,
-                                label="Seed",
-                                precision=0,
-                                scale=2
-                            )
-                            random_seed_btn = gr.Button("🎲", variant="secondary", size="sm", scale=0, elem_classes="secondary-btn")
-                            save_frames = gr.Checkbox(
-                                label="Save Frames as PNG",
-                                value=False,
-                                scale=1
-                            )
-
-                        # Image to Video (I2V)
-                        with gr.Accordion("Image to Video (I2V)", open=False):
-                            input_image = gr.Image(
-                                label="Input Image (optional)",
-                                type="filepath",
-                                height=150
-                            )
-                            with gr.Row():
-                                image_strength = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.8,
-                                    step=0.05,
-                                    label="Image Strength"
-                                )
-                                image_frame_idx = gr.Number(
-                                    value=0,
-                                    label="Frame Index",
-                                    precision=0
-                                )
-
-                        # Generate button
-                        generate_btn = gr.Button(
-                            "Generate Video",
-                            variant="primary",
-                            size="lg",
-                            elem_classes="generate-btn"
-                        )
-
-                    # Right column - Output
-                    with gr.Column(scale=1, elem_classes="output-section"):
-                        output_video = gr.Video(
-                            label="Generated Video",
-                            autoplay=True,
-                            height=350
-                        )
-                        output_audio = gr.Audio(
-                            label="Generated Audio",
-                            type="filepath"
-                        )
-                        status = gr.Textbox(
-                            label="Status",
-                            interactive=False,
-                            max_lines=2
-                        )
-                        generation_log = gr.Textbox(
-                            label="Generation Log",
-                            interactive=False,
-                            lines=6,
-                            max_lines=10,
-                            elem_classes="generation-log"
-                        )
-
-            # ===== MOVIE GENERATOR TAB (Position 2) =====
-            with gr.Tab("Movie Generator", id="movie_generator"):
-                # State for storing scenes
-                movie_scenes_state = gr.State([])
-
-                with gr.Row():
-                    # Left column - Controls
-                    with gr.Column(scale=1):
-                        # Story Input Section
-                        gr.Markdown("### Story Input")
-                        with gr.Group():
-                            movie_theme = gr.Textbox(
-                                label="Movie Theme / Idea",
-                                placeholder="Describe your movie idea...\n\nExample: A magical journey through an enchanted forest, from sunrise to moonlit night, following a glowing firefly.\n\nTip: Upload a reference image below and describe what it represents in your prompt!",
-                                lines=4,
-                                max_lines=8
-                            )
-
-                        # Reference Image Section
-                        with gr.Accordion("🖼️ Reference Image (Optional)", open=False):
-                            gr.Markdown("*Upload an image and describe what it represents in your story*")
-                            movie_input_image = gr.Image(
-                                label="Reference Image",
-                                type="filepath",
-                                height=150
-                            )
-                            movie_image_description = gr.Textbox(
-                                label="What does this image represent?",
-                                placeholder="Examples:\n• 'This is the main character'\n• 'This is the setting/background'\n• 'This is the object that appears throughout the story'",
-                                lines=2,
-                                max_lines=4
-                            )
-                            with gr.Row():
-                                movie_image_strength = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.8,
-                                    step=0.05,
-                                    label="Image Influence",
-                                    info="How strongly the image affects generation"
-                                )
-
-                        # Duration presets for quick selection
-                        movie_duration_preset = gr.Dropdown(
-                            choices=[
-                                "Custom",
-                                "30 sec (Short clip)",
-                                "1 min (Teaser)",
-                                "3 min (Music video)",
-                                "5 min (Short film)",
-                                "10 min (Episode)",
-                                "30 min (TV Episode)",
-                                "1 hour (Feature)",
-                                "1.5 hours (Standard film)",
-                                "2 hours (Hollywood)",
-                                "3 hours (Epic)"
-                            ],
-                            value="3 min (Music video)",
-                            label="Duration Preset"
-                        )
-                        with gr.Row():
-                            movie_duration = gr.Slider(
-                                minimum=MIN_MOVIE_DURATION,
-                                maximum=MAX_MOVIE_DURATION,
-                                value=180,
-                                step=5,
-                                label="Target Duration (seconds)"
-                            )
-                            movie_duration_display = gr.Textbox(
-                                value="3 min",
-                                label="Duration",
-                                interactive=False,
-                                scale=0
-                            )
-                        num_scenes_display = gr.Number(
-                            value=12,
-                            label="Number of Scenes",
-                            precision=0,
-                            interactive=True,
-                            minimum=1,
-                            maximum=MAX_SCENES
-                        )
-
-                        # AI Scene Writer Section - LLM for script + Gemma enhance
-                        gr.Markdown("### AI Scene Writer (LLM + Gemma)")
-                        gr.Markdown("*Step 1: LLM writes script | Step 2: Gemma enhances each scene*")
-                        with gr.Group():
-                            # LLM Selection for Script Writing
-                            with gr.Row():
-                                llm_provider_movie = gr.Dropdown(
-                                    choices=["LM Studio", "Ollama"],
-                                    value="LM Studio",
-                                    label="LLM Provider (Script)",
-                                    scale=1
-                                )
-                                llm_model_movie = gr.Dropdown(
-                                    choices=[],
-                                    label="Model",
-                                    interactive=True,
-                                    scale=2,
-                                    allow_custom_value=True
-                                )
-                            refresh_models_movie_btn = gr.Button("Refresh Models", variant="secondary", size="sm", elem_classes="secondary-btn")
-
-                            # Gemma Enhancement Option
-                            enhance_scenes_with_gemma = gr.Checkbox(
-                                label="Enhance scenes with Gemma (Step 2)",
-                                value=True,
-                                info="After LLM generates script, Gemma optimizes each scene for LTX-2"
-                            )
-
-                            generate_scenes_btn = gr.Button(
-                                "Generate Script",
-                                variant="primary",
-                                size="sm"
-                            )
-
-                            # Status textbox for live progress feedback
-                            script_generation_status = gr.Textbox(
-                                label="Script Generation Status",
-                                interactive=False,
-                                lines=1,
-                                placeholder="Click 'Generate Script' to start...",
-                                elem_classes="generation-status"
-                            )
-
-                        # Scene Editor Section
-                        with gr.Accordion("Scene Editor", open=True):
-                            scenes_dataframe = gr.Dataframe(
-                                headers=["#", "Description", "Duration (sec)", "Status"],
-                                datatype=["number", "str", "number", "str"],
-                                column_count=(4, "fixed"),
-                                row_count=(0, "dynamic"),
-                                interactive=True,
-                                wrap=True,
-                                label="Scenes",
-                                max_height=350,
-                                elem_classes="scene-editor"
-                            )
-                            with gr.Row():
-                                add_scene_btn = gr.Button("+ Add Scene", variant="secondary", size="sm", elem_classes="secondary-btn")
-                                scene_to_remove = gr.Number(
-                                    value=1,
-                                    label="Scene #",
-                                    precision=0,
-                                    minimum=1,
-                                    scale=0
-                                )
-                                remove_scene_btn = gr.Button("Remove", variant="secondary", size="sm", elem_classes="secondary-btn")
-                                regenerate_scene_btn = gr.Button("Regenerate", variant="secondary", size="sm", elem_classes="secondary-btn")
-
-                        # Script Manager Section
-                        with gr.Accordion("📁 Script Manager", open=False, elem_classes=["glass-card"]):
-                            with gr.Row():
-                                script_name_input = gr.Textbox(
-                                    label="Script Name",
-                                    placeholder="My Awesome Movie",
-                                    scale=2
-                                )
-                                save_script_btn = gr.Button("💾 Save", elem_classes=["secondary-btn"], scale=1)
-
-                            with gr.Row():
-                                script_dropdown = gr.Dropdown(
-                                    label="Saved Scripts",
-                                    choices=[],
-                                    interactive=True,
-                                    scale=2
-                                )
-                                refresh_scripts_btn = gr.Button("🔄", elem_classes=["secondary-btn"], scale=0, min_width=50)
-
-                            with gr.Row():
-                                load_script_btn = gr.Button("📂 Load", elem_classes=["secondary-btn"])
-                                delete_script_btn = gr.Button("🗑️ Delete", elem_classes=["secondary-btn"])
-
-                            script_status = gr.Markdown("")
-
-                        # Video Settings Section
-                        gr.Markdown("### Video Settings")
-                        with gr.Group():
-                            resolution_preset_movie = gr.Dropdown(
-                                choices=list(RESOLUTION_PRESETS.keys()),
-                                value="1080p (1920x1088)",
-                                label="Resolution"
-                            )
-                            with gr.Row():
-                                width_movie = gr.Number(value=1920, precision=0, visible=False)
-                                height_movie = gr.Number(value=1088, precision=0, visible=False)
-                            fps_movie = gr.Slider(
-                                minimum=12,
-                                maximum=30,
-                                value=24,
-                                step=1,
-                                label="FPS"
-                            )
-                            with gr.Row():
-                                use_continuity = gr.Checkbox(
-                                    label="Scene Continuity (I2V)",
-                                    value=True,
-                                    info="Use last frame of each scene as input for next scene"
-                                )
-                                continuity_strength = gr.Slider(
-                                    minimum=0.3,
-                                    maximum=0.9,
-                                    value=0.7,
-                                    step=0.05,
-                                    label="Continuity Strength"
-                                )
-                            # Gemma enhancement during video generation
-                            enhance_prompts_movie = gr.Checkbox(
-                                label="Final Gemma polish during generation",
-                                value=True,
-                                info="Extra Gemma enhancement when generating each scene"
-                            )
-                            with gr.Row(visible=True) as gemma_settings_movie:
-                                temperature_movie = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.7,
-                                    step=0.1,
-                                    label="Temperature"
-                                )
-                                max_tokens_movie = gr.Slider(
-                                    minimum=128,
-                                    maximum=1024,
-                                    value=512,
-                                    step=64,
-                                    label="Max Tokens"
-                                )
-
-                        # Generate Movie Button
-                        with gr.Row():
-                            generate_movie_btn = gr.Button(
-                                "Generate Movie",
-                                variant="primary",
-                                size="lg",
-                                elem_classes="generate-btn"
-                            )
-                            cancel_movie_btn = gr.Button(
-                                "Cancel",
-                                variant="secondary",
-                                size="lg"
-                            )
-
-                    # Right column - Output
-                    with gr.Column(scale=1, elem_classes="output-section"):
-                        # Progress Section
-                        gr.Markdown("### Progress")
-                        overall_progress_md = gr.Textbox(
-                            label="Overall Status",
-                            value="Ready",
-                            interactive=False,
-                            max_lines=1
-                        )
-                        scene_progress_md = gr.Textbox(
-                            label="Current Scene",
-                            value="",
-                            interactive=False,
-                            max_lines=1
-                        )
-
-                        # Preview Section
-                        gr.Markdown("### Scene Previews")
-                        scene_preview_gallery = gr.Gallery(
-                            label="Scene Thumbnails",
-                            columns=3,
-                            height=200,
-                            object_fit="cover"
-                        )
-                        current_scene_video = gr.Video(
-                            label="Current/Latest Scene",
-                            autoplay=True,
-                            height=200
-                        )
-
-                        # Final Output Section
-                        gr.Markdown("### Final Movie")
-                        final_movie_output = gr.Video(
-                            label="Complete Movie",
-                            autoplay=True,
-                            height=300
-                        )
-
-                        # Log Section
-                        generation_log_movie = gr.Textbox(
-                            label="Generation Log",
-                            interactive=False,
-                            lines=8,
-                            max_lines=15,
-                            elem_classes="generation-log"
-                        )
-
-            # ===== SETTINGS TAB (Advanced Settings) =====
-            with gr.Tab("Advanced Settings", id="settings"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        # CFG (Classifier-Free Guidance) Section
-                        gr.Markdown("### Classifier-Free Guidance (LTX-2)")
-                        gr.Markdown("*Based on LTX-2 paper: optimal video s_t=3, s_m=3; audio s_t=7, s_m=3*")
-                        with gr.Group():
-                            cfg_preset = gr.Dropdown(
-                                choices=list(CFG_PRESET_VALUES.keys()),
-                                value="Balanced (Default)",
-                                label="CFG Preset"
-                            )
-                            with gr.Row():
-                                text_cfg = gr.Slider(
-                                    minimum=1.0,
-                                    maximum=10.0,
-                                    value=3.0,
-                                    step=0.5,
-                                    label="Text Guidance (s_t)",
-                                    info="Higher = stronger text prompt adherence"
-                                )
-                                cross_modal_cfg = gr.Slider(
-                                    minimum=1.0,
-                                    maximum=10.0,
-                                    value=3.0,
-                                    step=0.5,
-                                    label="Cross-Modal Guidance (s_m)",
-                                    info="Higher = stronger audio-video sync"
-                                )
-
-                        # Built-in Prompt Enhancement (Gemma)
-                        gr.Markdown("### Prompt Enhancement (Gemma)")
-                        with gr.Group():
-                            enhance_prompt_checkbox = gr.Checkbox(
-                                label="Enable Gemma Enhancement",
-                                value=True,
-                                info="Use built-in Gemma 3 for prompt improvement"
-                            )
-                            with gr.Row():
-                                temperature = gr.Slider(
-                                    minimum=0.0,
-                                    maximum=1.0,
-                                    value=0.7,
-                                    step=0.1,
-                                    label="Temperature"
-                                )
-                                max_tokens = gr.Slider(
-                                    minimum=128,
-                                    maximum=1024,
-                                    value=512,
-                                    step=64,
-                                    label="Max Tokens"
-                                )
-
-                    with gr.Column(scale=1):
-                        # Audio Output Settings
-                        gr.Markdown("### Audio Output (LTX-2)")
-                        with gr.Group():
-                            audio_sample_rate = gr.Radio(
-                                choices=[16000, 24000, 48000],
-                                value=24000,
-                                label="Sample Rate (Hz)",
-                                info="24kHz is LTX-2 default output"
-                            )
-                            stereo_output = gr.Checkbox(
-                                label="Stereo Output",
-                                value=True,
-                                info="LTX-2 supports 2-channel stereo audio"
-                            )
-
-                        # Inference/Diffusion Steps (LTX-2 paper: single-step Euler solver)
-                        gr.Markdown("### Diffusion Settings")
-                        with gr.Group():
-                            num_inference_steps = gr.Slider(
-                                minimum=10,
-                                maximum=100,
-                                value=50,
-                                step=5,
-                                label="Diffusion Steps",
-                                info="Minder stappen = sneller, meer = hogere kwaliteit (LTX-2 paper: ~18x sneller dan Wan 2.2)"
-                            )
-
-                        # Negative prompt (not supported yet)
-                        gr.Markdown("### Other")
-                        negative_prompt = gr.Textbox(
-                            label="Negative Prompt (NOT YET SUPPORTED)",
-                            placeholder="Not yet supported by mlx-video...",
-                            lines=2,
-                            info="mlx-video does not support negative prompts yet"
-                        )
+        with gr.Tabs():
+            generation = build_generation_tab(
+                CAMERA_MOTIONS,
+                LIGHTING_OPTIONS,
+                SPEECH_LANGUAGES,
+                SPEECH_ACCENTS,
+                RESOLUTION_PRESETS,
+                DURATION_PRESETS,
+            )
+            movie = build_movie_generator_tab(
+                RESOLUTION_PRESETS,
+                MIN_MOVIE_DURATION,
+                MAX_MOVIE_DURATION,
+                MAX_SCENES,
+            )
+            settings = build_advanced_settings_tab(CFG_PRESET_VALUES)
 
         # ===== EVENT HANDLERS =====
 
@@ -3436,16 +2860,16 @@ def create_ui():
                 return res[0], res[1], res[0], res[1]
             return gr.update(), gr.update(), gr.update(), gr.update()
 
-        resolution_preset.change(
+        generation.resolution_preset.change(
             fn=on_resolution_change,
-            inputs=[resolution_preset],
-            outputs=[width, height, width_slider, height_slider]
+            inputs=[generation.resolution_preset],
+            outputs=[generation.width, generation.height, generation.width_slider, generation.height_slider],
         )
 
         # Sync sliders with hidden values
-        width_slider.change(fn=lambda x: x, inputs=[width_slider], outputs=[width])
-        height_slider.change(fn=lambda x: x, inputs=[height_slider], outputs=[height])
-        frames_slider.change(fn=lambda x: x, inputs=[frames_slider], outputs=[num_frames])
+        generation.width_slider.change(fn=lambda x: x, inputs=[generation.width_slider], outputs=[generation.width])
+        generation.height_slider.change(fn=lambda x: x, inputs=[generation.height_slider], outputs=[generation.height])
+        generation.frames_slider.change(fn=lambda x: x, inputs=[generation.frames_slider], outputs=[generation.num_frames])
 
         # Duration preset handler
         def on_duration_change(preset):
@@ -3456,29 +2880,23 @@ def create_ui():
                 return frames, frames
             return gr.update(), gr.update()
 
-        duration_preset.change(
+        generation.duration_preset.change(
             fn=on_duration_change,
-            inputs=[duration_preset],
-            outputs=[num_frames, frames_slider]
+            inputs=[generation.duration_preset],
+            outputs=[generation.num_frames, generation.frames_slider],
         )
 
         # Random seed button
-        random_seed_btn.click(
-            fn=randomize_seed,
-            outputs=[seed]
-        )
+        generation.random_seed_btn.click(fn=randomize_seed, outputs=[generation.seed])
 
         # Clear prompt button
-        clear_btn.click(
-            fn=lambda: "",
-            outputs=[prompt]
-        )
+        generation.clear_btn.click(fn=lambda: "", outputs=[generation.prompt])
 
         # LLM provider change
-        llm_provider.change(
+        generation.llm_provider.change(
             fn=update_models,
-            inputs=[llm_provider],
-            outputs=[llm_model]
+            inputs=[generation.llm_provider],
+            outputs=[generation.llm_model],
         )
 
         # Enhance with external LLM
@@ -3503,41 +2921,69 @@ def create_ui():
 
             return enhanced
 
-        enhance_btn.click(
+        generation.enhance_btn.click(
             fn=dual_enhance_prompt,
-            inputs=[prompt, llm_provider, llm_model, enhance_prompt_checkbox],
-            outputs=[prompt]
+            inputs=[
+                generation.prompt,
+                generation.llm_provider,
+                generation.llm_model,
+                settings.enhance_prompt_checkbox,
+            ],
+            outputs=[generation.prompt],
         )
 
         # Prompt Builder - Build prompt from components
-        build_prompt_btn.click(
+        generation.build_prompt_btn.click(
             fn=build_prompt_from_components,
             inputs=[
-                pb_camera, pb_lighting, pb_environment,
-                pb_subject, pb_action,
-                pb_ambient, pb_foley, pb_music, pb_speech,
-                pb_speech_language, pb_speech_accent
+                generation.pb_camera,
+                generation.pb_lighting,
+                generation.pb_environment,
+                generation.pb_subject,
+                generation.pb_action,
+                generation.pb_ambient,
+                generation.pb_foley,
+                generation.pb_music,
+                generation.pb_speech,
+                generation.pb_speech_language,
+                generation.pb_speech_accent,
             ],
-            outputs=[prompt]
+            outputs=[generation.prompt],
         )
 
         # CFG Preset handler
-        cfg_preset.change(
+        settings.cfg_preset.change(
             fn=apply_cfg_preset,
-            inputs=[cfg_preset],
-            outputs=[text_cfg, cross_modal_cfg]
+            inputs=[settings.cfg_preset],
+            outputs=[settings.text_cfg, settings.cross_modal_cfg],
         )
 
         # Main generate button
-        generate_btn.click(
+        generation.generate_btn.click(
             fn=generate_video_ui,
             inputs=[
-                prompt, width, height, num_frames, fps_slider,
-                seed, input_image, image_strength, image_frame_idx,
-                enhance_prompt_checkbox, temperature, max_tokens,
-                save_frames, negative_prompt
+                generation.prompt,
+                generation.width,
+                generation.height,
+                generation.num_frames,
+                generation.fps_slider,
+                generation.seed,
+                generation.input_image,
+                generation.image_strength,
+                generation.image_frame_idx,
+                settings.enhance_prompt_checkbox,
+                settings.temperature,
+                settings.max_tokens,
+                generation.save_frames,
+                settings.negative_prompt,
+                generation.tiling_mode,
             ],
-            outputs=[output_video, output_audio, status, generation_log]
+            outputs=[
+                generation.output_video,
+                generation.output_audio,
+                generation.status,
+                generation.generation_log,
+            ],
         )
 
         # ===== MOVIE GENERATOR EVENT HANDLERS =====
@@ -3560,14 +3006,13 @@ def create_ui():
             """Format seconds into human readable duration."""
             if seconds < 60:
                 return f"{seconds} sec"
-            elif seconds < 3600:
+            if seconds < 3600:
                 mins = seconds // 60
                 secs = seconds % 60
                 return f"{mins}m {secs}s" if secs else f"{mins} min"
-            else:
-                hours = seconds // 3600
-                mins = (seconds % 3600) // 60
-                return f"{hours}h {mins}m" if mins else f"{hours} hour"
+            hours = seconds // 3600
+            mins = (seconds % 3600) // 60
+            return f"{hours}h {mins}m" if mins else f"{hours} hour"
 
         # Duration preset change
         def on_duration_preset_change(preset):
@@ -3578,10 +3023,10 @@ def create_ui():
             display = format_duration(duration)
             return duration, display, num_scenes
 
-        movie_duration_preset.change(
+        movie.movie_duration_preset.change(
             fn=on_duration_preset_change,
-            inputs=[movie_duration_preset],
-            outputs=[movie_duration, movie_duration_display, num_scenes_display]
+            inputs=[movie.movie_duration_preset],
+            outputs=[movie.movie_duration, movie.movie_duration_display, movie.num_scenes_display],
         )
 
         # Auto-calculate number of scenes from duration (when slider changes)
@@ -3590,24 +3035,20 @@ def create_ui():
             display = format_duration(int(duration))
             return num_scenes, display
 
-        movie_duration.change(
+        movie.movie_duration.change(
             fn=on_duration_change_movie,
-            inputs=[movie_duration],
-            outputs=[num_scenes_display, movie_duration_display]
+            inputs=[movie.movie_duration],
+            outputs=[movie.num_scenes_display, movie.movie_duration_display],
         )
 
         # LLM provider change for movie tab
-        llm_provider_movie.change(
-            fn=update_models,
-            inputs=[llm_provider_movie],
-            outputs=[llm_model_movie]
-        )
+        movie.llm_provider.change(fn=update_models, inputs=[movie.llm_provider], outputs=[movie.llm_model])
 
         # Refresh models button for movie tab
-        refresh_models_movie_btn.click(
+        movie.refresh_models_btn.click(
             fn=update_models,
-            inputs=[llm_provider_movie],
-            outputs=[llm_model_movie]
+            inputs=[movie.llm_provider],
+            outputs=[movie.llm_model],
         )
 
         # Resolution preset for movie tab
@@ -3619,17 +3060,17 @@ def create_ui():
                 return res[0], res[1]
             return gr.update(), gr.update()
 
-        resolution_preset_movie.change(
+        movie.resolution_preset.change(
             fn=on_resolution_change_movie,
-            inputs=[resolution_preset_movie],
-            outputs=[width_movie, height_movie]
+            inputs=[movie.resolution_preset],
+            outputs=[movie.width, movie.height],
         )
 
         # ===== SCRIPT MANAGEMENT EVENT HANDLERS =====
         def refresh_script_list():
             """Refresh the list of saved scripts."""
             scripts = list_scripts()
-            choices = [(f"{s['name']} ({s['scenes']} scenes) - {s['created']}", s['path']) for s in scripts]
+            choices = [(f"{s['name']} ({s['scenes']} scenes) - {s['created']}", s["path"]) for s in scripts]
             return gr.update(choices=choices)
 
         def save_current_script(name, theme, scenes, width, height, fps):
@@ -3638,8 +3079,8 @@ def create_ui():
                 return "⚠️ Please enter a script name", gr.update()
             if not scenes:
                 return "⚠️ No scenes to save", gr.update()
-            settings = {"width": int(width), "height": int(height), "fps": int(fps)}
-            msg = save_script(name, theme, scenes, settings)
+            settings_payload = {"width": int(width), "height": int(height), "fps": int(fps)}
+            msg = save_script(name, theme, scenes, settings_payload)
             return msg, refresh_script_list()
 
         def load_selected_script(selected):
@@ -3647,7 +3088,7 @@ def create_ui():
             if not selected:
                 return gr.update(), gr.update(), [], "⚠️ No script selected"
             try:
-                theme, scenes, settings = load_script(selected)
+                theme, scenes, settings_payload = load_script(selected)
                 return theme, scenes_to_dataframe(scenes), scenes, f"✅ Loaded: {Path(selected).stem}"
             except Exception as e:
                 return gr.update(), gr.update(), [], f"❌ Error loading: {e}"
@@ -3663,28 +3104,44 @@ def create_ui():
                 return f"❌ Error deleting: {e}", gr.update()
 
         # Wire up script management events
-        save_script_btn.click(
+        movie.save_script_btn.click(
             save_current_script,
-            inputs=[script_name_input, movie_theme, movie_scenes_state, width_movie, height_movie, fps_movie],
-            outputs=[script_status, script_dropdown]
+            inputs=[
+                movie.script_name_input,
+                movie.movie_theme,
+                movie.movie_scenes_state,
+                movie.width,
+                movie.height,
+                movie.fps,
+            ],
+            outputs=[movie.script_status, movie.script_dropdown],
         )
 
-        refresh_scripts_btn.click(refresh_script_list, outputs=[script_dropdown])
+        movie.refresh_scripts_btn.click(refresh_script_list, outputs=[movie.script_dropdown])
 
-        load_script_btn.click(
+        movie.load_script_btn.click(
             load_selected_script,
-            inputs=[script_dropdown],
-            outputs=[movie_theme, scenes_dataframe, movie_scenes_state, script_status]
+            inputs=[movie.script_dropdown],
+            outputs=[movie.movie_theme, movie.scenes_dataframe, movie.movie_scenes_state, movie.script_status],
         )
 
-        delete_script_btn.click(
+        movie.delete_script_btn.click(
             delete_selected_script,
-            inputs=[script_dropdown],
-            outputs=[script_status, script_dropdown]
+            inputs=[movie.script_dropdown],
+            outputs=[movie.script_status, movie.script_dropdown],
         )
 
         # Generate scenes sequentially with LLM + Gemma enhancement (live updates)
-        def on_generate_scenes_sequential(theme, num_scenes, provider, model, enhance_gemma, image_desc, current_scenes, progress=gr.Progress()):
+        def on_generate_scenes_sequential(
+            theme,
+            num_scenes,
+            provider,
+            model,
+            enhance_gemma,
+            image_desc,
+            current_scenes,
+            progress=gr.Progress(),
+        ):
             if not theme.strip():
                 gr.Warning("Please enter a movie theme first!")
                 yield current_scenes, scenes_to_dataframe(current_scenes), "Error: No theme provided"
@@ -3698,19 +3155,23 @@ def create_ui():
                 model,
                 enhance_with_gemma=enhance_gemma,
                 image_description=image_desc,
-                progress=progress
+                progress=progress,
             ):
                 df_data = scenes_to_dataframe(scenes) if scenes else []
                 yield scenes, df_data, status
 
-        generate_scenes_btn.click(
+        movie.generate_scenes_btn.click(
             fn=on_generate_scenes_sequential,
             inputs=[
-                movie_theme, num_scenes_display,
-                llm_provider_movie, llm_model_movie,
-                enhance_scenes_with_gemma, movie_image_description, movie_scenes_state
+                movie.movie_theme,
+                movie.num_scenes_display,
+                movie.llm_provider,
+                movie.llm_model,
+                movie.enhance_scenes_with_gemma,
+                movie.movie_image_description,
+                movie.movie_scenes_state,
             ],
-            outputs=[movie_scenes_state, scenes_dataframe, script_generation_status]
+            outputs=[movie.movie_scenes_state, movie.scenes_dataframe, movie.script_generation_status],
         )
 
         # Sync dataframe changes to state
@@ -3720,10 +3181,10 @@ def create_ui():
             scenes = dataframe_to_scenes(df_data)
             return scenes
 
-        scenes_dataframe.change(
+        movie.scenes_dataframe.change(
             fn=sync_dataframe_to_state,
-            inputs=[scenes_dataframe],
-            outputs=[movie_scenes_state]
+            inputs=[movie.scenes_dataframe],
+            outputs=[movie.movie_scenes_state],
         )
 
         # Add scene
@@ -3731,10 +3192,10 @@ def create_ui():
             new_scenes = add_empty_scene(scenes if scenes else [])
             return new_scenes, scenes_to_dataframe(new_scenes)
 
-        add_scene_btn.click(
+        movie.add_scene_btn.click(
             fn=on_add_scene,
-            inputs=[movie_scenes_state],
-            outputs=[movie_scenes_state, scenes_dataframe]
+            inputs=[movie.movie_scenes_state],
+            outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
         # Remove scene
@@ -3744,10 +3205,10 @@ def create_ui():
             new_scenes = remove_scene_at_index(scenes, int(index))
             return new_scenes, scenes_to_dataframe(new_scenes)
 
-        remove_scene_btn.click(
+        movie.remove_scene_btn.click(
             fn=on_remove_scene,
-            inputs=[movie_scenes_state, scene_to_remove],
-            outputs=[movie_scenes_state, scenes_dataframe]
+            inputs=[movie.movie_scenes_state, movie.scene_to_remove],
+            outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
         # Regenerate single scene with LLM + Gemma
@@ -3761,27 +3222,38 @@ def create_ui():
             )
             return new_scenes, scenes_to_dataframe(new_scenes)
 
-        regenerate_scene_btn.click(
+        movie.regenerate_scene_btn.click(
             fn=on_regenerate_scene,
             inputs=[
-                movie_scenes_state, scene_to_remove, movie_theme,
-                llm_provider_movie, llm_model_movie, enhance_scenes_with_gemma
+                movie.movie_scenes_state,
+                movie.scene_to_remove,
+                movie.movie_theme,
+                movie.llm_provider,
+                movie.llm_model,
+                movie.enhance_scenes_with_gemma,
             ],
-            outputs=[movie_scenes_state, scenes_dataframe]
+            outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
         # Cancel movie generation
-        cancel_movie_btn.click(
-            fn=cancel_movie_generation,
-            outputs=[cancel_movie_btn]
-        )
+        movie.cancel_movie_btn.click(fn=cancel_movie_generation, outputs=[movie.cancel_movie_btn])
 
         # Generate movie
         def on_generate_movie(
-            scenes, df_data, width, height, fps,
-            use_cont, cont_strength,
-            enhance, temp, max_tok,
-            ref_image, ref_image_strength
+            scenes,
+            df_data,
+            width,
+            height,
+            fps,
+            tiling,
+            use_cont,
+            cont_strength,
+            enhance,
+            temp,
+            max_tok,
+            ref_image,
+            ref_image_strength,
+            image_desc,
         ):
             # CRITICAL: Explicitly sync dataframe to scenes before generation
             # This ensures we use the user's edited descriptions, not stale state
@@ -3797,31 +3269,51 @@ def create_ui():
             # Run the pipeline generator
             for result in generate_movie_pipeline(
                 scenes,
-                int(width), int(height), int(fps),
-                use_cont, cont_strength,
-                enhance, temp, int(max_tok),
+                int(width),
+                int(height),
+                int(fps),
+                use_cont,
+                cont_strength,
+                enhance,
+                temp,
+                int(max_tok),
                 input_image=ref_image,
-                image_strength=ref_image_strength
+                image_strength=ref_image_strength,
+                character_description=image_desc,
+                tiling_mode=tiling,
             ):
                 yield result
 
-        generate_movie_btn.click(
+        movie.generate_movie_btn.click(
             fn=on_generate_movie,
             inputs=[
-                movie_scenes_state, scenes_dataframe,  # Include dataframe for explicit sync
-                width_movie, height_movie, fps_movie,
-                use_continuity, continuity_strength,
-                enhance_prompts_movie, temperature_movie, max_tokens_movie,
-                movie_input_image, movie_image_strength
+                movie.movie_scenes_state,
+                movie.scenes_dataframe,
+                movie.width,
+                movie.height,
+                movie.fps,
+                movie.tiling_mode,
+                movie.use_continuity,
+                movie.continuity_strength,
+                movie.enhance_prompts,
+                movie.temperature,
+                movie.max_tokens,
+                movie.movie_input_image,
+                movie.movie_image_strength,
+                movie.movie_image_description,
             ],
             outputs=[
-                scene_preview_gallery, current_scene_video, final_movie_output,
-                overall_progress_md, scene_progress_md, generation_log_movie
-            ]
+                movie.scene_preview_gallery,
+                movie.current_scene_video,
+                movie.final_movie_output,
+                movie.overall_progress_md,
+                movie.scene_progress_md,
+                movie.generation_log,
+            ],
         )
 
         # Load saved scripts on app startup
-        demo.load(refresh_script_list, outputs=[script_dropdown])
+        demo.load(refresh_script_list, outputs=[movie.script_dropdown])
 
     return demo
 
