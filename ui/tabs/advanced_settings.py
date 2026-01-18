@@ -11,6 +11,9 @@ class AdvancedSettingsTabComponents:
     text_cfg: gr.Slider
     cross_modal_cfg: gr.Slider
     prompt_enhancer_choice: gr.Dropdown
+    llm_provider: gr.Dropdown
+    llm_model: gr.Dropdown
+    refresh_models_btn: gr.Button
     enhance_prompt_checkbox: gr.Checkbox
     temperature: gr.Slider
     max_tokens: gr.Slider
@@ -54,11 +57,33 @@ def build_advanced_settings_tab(
 
                 gr.Markdown("### Prompt Enhancement")
                 with gr.Group():
+                    with gr.Row():
+                        llm_provider = gr.Dropdown(
+                            choices=["None", "LM Studio", "Ollama"],
+                            value="None",
+                            label="LLM Provider (Global)",
+                            scale=1,
+                            allow_custom_value=True,
+                        )
+                        llm_model = gr.Dropdown(
+                            choices=[],
+                            label="LLM Model",
+                            interactive=False,
+                            scale=2,
+                            allow_custom_value=True,
+                        )
+                        refresh_models_btn = gr.Button(
+                            "Refresh",
+                            variant="secondary",
+                            size="sm",
+                            scale=0,
+                            elem_classes="secondary-btn",
+                        )
                     prompt_enhancer_choice = gr.Dropdown(
                         choices=["Gemma (Built-in)", "LLM (Ollama/LM Studio)"],
                         value="Gemma (Built-in)",
                         label="Prompt Enhancer",
-                        info="Kies welk model de prompts verbetert",
+                        info="LLM provider overrides Gemma when selected",
                     )
                     enhance_prompt_checkbox = gr.Checkbox(
                         label="Enable Auto-Enhancement",
@@ -123,6 +148,9 @@ def build_advanced_settings_tab(
         text_cfg=text_cfg,
         cross_modal_cfg=cross_modal_cfg,
         prompt_enhancer_choice=prompt_enhancer_choice,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        refresh_models_btn=refresh_models_btn,
         enhance_prompt_checkbox=enhance_prompt_checkbox,
         temperature=temperature,
         max_tokens=max_tokens,

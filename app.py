@@ -23,14 +23,6 @@ from gradio.themes.utils import colors, fonts, sizes
 from ui.tabs.advanced_settings import build_advanced_settings_tab
 from ui.tabs.generation import build_generation_tab
 from ui.tabs.movie_generator import build_movie_generator_tab
-from lora_utils import (
-    convert_pytorch_lora,
-    validate_lora,
-    fuse_lora_weights,
-    scan_for_loras,
-    load_lora_for_generation,
-    get_lora_info,
-)
 
 
 # ===== AURORA THEME - Premium Dark Theme with Glassmorphism =====
@@ -192,14 +184,15 @@ DEFAULT_SETTINGS = {
         "tiling_mode": "auto",
         "image_strength": 0.8,
         "pb_camera": "Static",
-        "pb_lighting": "Natural daylight",
-        "lora_scale": 1.0
+        "pb_lighting": "Natural daylight"
     },
     "advanced": {
         "cfg_preset": "Balanced (Default)",
         "text_cfg": 3.0,
         "cross_modal_cfg": 3.0,
         "prompt_enhancer": "Gemma (Built-in)",
+        "llm_provider": "None",
+        "llm_model": None,
         "enhance_prompt": True,
         "temperature": 0.7,
         "max_tokens": 2048,
@@ -213,7 +206,6 @@ DEFAULT_SETTINGS = {
         "fps": 24,
         "resolution_preset": "1080p (1920x1088)",
         "tiling_mode": "auto",
-        "lora_scale": 1.0,
         "use_continuity": True,
         "continuity_strength": 0.7,
         "enhance_prompts": True,
@@ -221,6 +213,13 @@ DEFAULT_SETTINGS = {
         "max_tokens": 512
     }
 }
+
+
+def normalize_llm_provider(value: str | None) -> str:
+    """Normalize LLM provider values from settings."""
+    if value in VALID_LLM_PROVIDERS or value == "None":
+        return value
+    return "None"
 
 
 def load_settings():
@@ -235,6 +234,11 @@ def load_settings():
                     settings[section] = DEFAULT_SETTINGS[section].copy()
                     if section in saved:
                         settings[section].update(saved[section])
+                settings["advanced"]["llm_provider"] = normalize_llm_provider(
+                    settings["advanced"].get("llm_provider", "None")
+                )
+                if settings["advanced"]["llm_provider"] == "None":
+                    settings["advanced"]["llm_model"] = None
                 return settings
         except Exception:
             pass
@@ -272,12 +276,13 @@ def load_all_settings():
         s["generation"]["image_strength"],
         s["generation"]["pb_camera"],
         s["generation"]["pb_lighting"],
-        s["generation"]["lora_scale"],
         # Advanced settings tab
         s["advanced"]["cfg_preset"],
         s["advanced"]["text_cfg"],
         s["advanced"]["cross_modal_cfg"],
         s["advanced"]["prompt_enhancer"],
+        s["advanced"]["llm_provider"],
+        s["advanced"]["llm_model"],
         s["advanced"]["enhance_prompt"],
         s["advanced"]["temperature"],
         s["advanced"]["max_tokens"],
@@ -290,7 +295,6 @@ def load_all_settings():
         s["movie"]["fps"],
         s["movie"]["resolution_preset"],
         s["movie"]["tiling_mode"],
-        s["movie"]["lora_scale"],
         s["movie"]["use_continuity"],
         s["movie"]["continuity_strength"],
         s["movie"]["enhance_prompts"],
@@ -437,6 +441,7 @@ AUDIO ELEMENTS (LTX-2 supports stereo 24kHz):
 # LLM API endpoints
 LM_STUDIO_BASE = "http://localhost:1234/v1"
 OLLAMA_BASE = "http://localhost:11434"
+VALID_LLM_PROVIDERS = {"LM Studio", "Ollama"}
 
 # Gemma model configuration - using abliterated version for unrestricted prompt enhancement
 GEMMA_MODEL_REPO = "mlx-community/gemma-3-12b-it-qat-abliterated-lm-4bit"
@@ -1622,16 +1627,25 @@ def update_models(provider: str) -> gr.Dropdown:
     """Update model dropdown based on selected provider."""
     if provider == "None":
         return gr.Dropdown(choices=[], value=None, interactive=False)
+    if provider not in VALID_LLM_PROVIDERS:
+        return gr.Dropdown(choices=[], value=None, interactive=False)
 
     models = get_available_models(provider)
     return gr.Dropdown(
         choices=models,
         value=models[0] if models else None,
-        interactive=True
+        interactive=True,
+        allow_custom_value=True,
     )
 
 
-def enhance_prompt_with_llm(prompt: str, provider: str, model: str) -> str:
+def enhance_prompt_with_llm(
+    prompt: str,
+    provider: str,
+    model: str,
+    temperature: float = 0.7,
+    max_tokens: int = 500,
+) -> str:
     """Use LLM to enhance the video prompt."""
     print(f"[DEBUG] enhance called: prompt='{prompt}', provider='{provider}', model='{model}'")
 
@@ -1680,8 +1694,8 @@ Antwoord ALLEEN met de verbeterde prompt in het Engels, geen uitleg."""
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": f"Verbeter deze video prompt: {prompt}"}
                     ],
-                    "temperature": 0.7,
-                    "max_tokens": 500
+                    "temperature": float(temperature),
+                    "max_tokens": int(max_tokens),
                 },
                 timeout=60
             )
@@ -1724,7 +1738,11 @@ Antwoord ALLEEN met de verbeterde prompt in het Engels, geen uitleg."""
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": f"Verbeter deze video prompt: {prompt}"}
                     ],
-                    "stream": False
+                    "stream": False,
+                    "options": {
+                        "temperature": float(temperature),
+                        "num_predict": int(max_tokens),
+                    },
                 },
                 timeout=60
             )
@@ -1873,152 +1891,6 @@ def apply_cfg_preset(preset: str):
         return gr.update(), gr.update()
     values = CFG_PRESET_VALUES[preset]
     return values["text_cfg"], values["cross_modal_cfg"]
-
-
-# ===== LORA HELPER FUNCTIONS =====
-
-def handle_lora_upload(files, current_state, scale):
-    """Handle LoRA file upload and validation.
-
-    Args:
-        files: List of uploaded file paths
-        current_state: Current LoRA state (list of configs)
-        scale: Default scale to apply
-
-    Returns:
-        Tuple of (updated_state, status_message)
-    """
-    if not files:
-        return current_state, "No files uploaded"
-
-    new_state = list(current_state) if current_state else []
-    status_messages = []
-
-    for file_obj in files:
-        # Get the file path from the file object
-        if hasattr(file_obj, 'name'):
-            file_path = file_obj.name
-        else:
-            file_path = str(file_obj)
-
-        # Validate the LoRA
-        info = get_lora_info(file_path)
-
-        if not info.get("valid", False):
-            status_messages.append(f"Invalid: {Path(file_path).name} - {info.get('error', 'Unknown error')}")
-            continue
-
-        # Check if already loaded
-        existing_paths = [lora.get("path") for lora in new_state]
-        if file_path in existing_paths:
-            status_messages.append(f"Already loaded: {info.get('name', Path(file_path).stem)}")
-            continue
-
-        # Load the LoRA
-        lora_config = load_lora_for_generation(file_path, scale)
-        if lora_config:
-            new_state.append(lora_config)
-            status_messages.append(
-                f"Loaded: {lora_config['name']} (rank={lora_config['rank']}, scale={scale})"
-            )
-        else:
-            status_messages.append(f"Failed to load: {Path(file_path).name}")
-
-    status = "\n".join(status_messages) if status_messages else "No valid LoRAs loaded"
-    return new_state, status
-
-
-def handle_lora_dropdown_change(selected_paths, current_state, scale):
-    """Handle LoRA dropdown selection change.
-
-    Args:
-        selected_paths: List of selected file paths from dropdown
-        current_state: Current LoRA state
-        scale: Scale to apply to newly selected LoRAs
-
-    Returns:
-        Tuple of (updated_state, status_message)
-    """
-    if not selected_paths:
-        return [], "No LoRAs selected"
-
-    new_state = []
-    status_messages = []
-
-    for file_path in selected_paths:
-        # Load the LoRA
-        lora_config = load_lora_for_generation(file_path, scale)
-        if lora_config:
-            new_state.append(lora_config)
-            status_messages.append(f"Selected: {lora_config['name']} (scale={scale})")
-        else:
-            status_messages.append(f"Failed to load: {Path(file_path).name}")
-
-    status = "\n".join(status_messages) if status_messages else "No valid LoRAs selected"
-    return new_state, status
-
-
-def handle_lora_scale_change(new_scale, current_state):
-    """Update scale for all loaded LoRAs.
-
-    Args:
-        new_scale: New scale value
-        current_state: Current LoRA state
-
-    Returns:
-        Tuple of (updated_state, status_message)
-    """
-    if not current_state:
-        return current_state, "No LoRAs loaded"
-
-    updated_state = []
-    for lora in current_state:
-        updated_lora = dict(lora)
-        updated_lora["scale"] = new_scale
-        updated_state.append(updated_lora)
-
-    names = [lora.get("name", "unknown") for lora in updated_state]
-    status = f"Updated scale to {new_scale} for: {', '.join(names)}"
-    return updated_state, status
-
-
-def handle_scan_loras():
-    """Scan for LoRA files in default locations.
-
-    Returns:
-        Tuple of (dropdown_choices, status_message)
-    """
-    found_loras = scan_for_loras()
-
-    if not found_loras:
-        return gr.update(choices=[]), "No LoRA files found in ~/Downloads or ~/.mlx-video-ui/loras"
-
-    # Build choices with display names
-    choices = [(lora["path"], f"{lora['name']} ({lora['size_mb']} MB)") for lora in found_loras]
-
-    # For Gradio dropdown, we need just the values
-    dropdown_choices = [lora["path"] for lora in found_loras]
-
-    status = f"Found {len(found_loras)} LoRA file(s)"
-    return gr.update(choices=dropdown_choices), status
-
-
-def prepare_lora_configs_for_generation(lora_state):
-    """Prepare LoRA configs for video generation.
-
-    Args:
-        lora_state: The LoRA state from the UI
-
-    Returns:
-        List of LoRA configs ready for fuse_lora_weights, or empty list
-    """
-    if not lora_state:
-        return []
-
-    # Filter out any LoRAs with scale=0 (disabled)
-    active_loras = [lora for lora in lora_state if lora.get("scale", 1.0) != 0.0]
-
-    return active_loras
 
 
 # ===== MOVIE GENERATOR HELPER FUNCTIONS =====
@@ -2344,6 +2216,142 @@ ENHANCED SCENE (only the description, no explanation):"""
     return scene_description
 
 
+def enhance_scene_with_llm(
+    scene_description: str,
+    provider: str,
+    model: str,
+    temperature: float = 0.7,
+    max_tokens: int = 512,
+) -> str:
+    """Enhance a single scene description using LM Studio or Ollama."""
+    try:
+        enhance_prompt = f"""Enhance this scene description for LTX-2 video generation.
+
+RULES (LTX-2 paper):
+1. Be COMPREHENSIVE but FACTUAL
+2. Describe BOTH visual AND audio elements
+3. Specify: subject, action, camera movement, lighting
+4. Specify: ambient sounds, foley, music, speech with language/accent
+5. NO emotional interpretation - only describe what is seen and heard
+6. Be detailed and specific, not vague
+
+ORIGINAL SCENE:
+{scene_description}
+
+ENHANCED SCENE (only the description, no explanation):"""
+
+        messages = [
+            {"role": "system", "content": "You are a precise LTX-2 scene enhancer."},
+            {"role": "user", "content": enhance_prompt},
+        ]
+
+        if provider == "LM Studio":
+            resp = requests.post(
+                f"{LM_STUDIO_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": float(temperature),
+                    "max_tokens": int(max_tokens),
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices or "message" not in choices[0]:
+                gr.Warning("Unexpected LM Studio response format")
+                return scene_description
+            message = choices[0]["message"]
+            response = message.get("content", "").strip()
+            if not response and "reasoning" in message:
+                response = message.get("reasoning", "").strip()
+
+        elif provider == "Ollama":
+            resp = requests.post(
+                f"{OLLAMA_BASE}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": float(temperature),
+                        "num_predict": int(max_tokens),
+                    },
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            response = data.get("message", {}).get("content", "").strip()
+        else:
+            return scene_description
+
+        response = response.strip()
+        prefixes_to_remove = [
+            "ENHANCED SCENE:",
+            "Enhanced Scene:",
+            "Here is the enhanced scene:",
+            "Here's the enhanced scene:",
+        ]
+        for prefix in prefixes_to_remove:
+            if response.startswith(prefix):
+                response = response[len(prefix):].strip()
+
+        return response or scene_description
+
+    except Exception as e:
+        print(f"[DEBUG] LLM scene enhancement error: {e}")
+        gr.Warning(f"LLM error: {e}")
+        return scene_description
+
+
+def enhance_scene_description(
+    scene_description: str,
+    provider: str,
+    model: str | None,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    """Enhance scenes using LLM when configured, otherwise Gemma."""
+    if provider in VALID_LLM_PROVIDERS:
+        if not model:
+            gr.Warning("Select an LLM model in Advanced Settings")
+            return scene_description
+        return enhance_scene_with_llm(scene_description, provider, model, temperature, max_tokens)
+    return enhance_scene_with_gemma(scene_description, temperature=temperature, max_tokens=max_tokens)
+
+
+def resolve_prompt_enhancement(
+    prompt: str,
+    enhance_prompt: bool,
+    prompt_enhancer_choice: str,
+    provider: str,
+    model: str | None,
+    temperature: float,
+    max_tokens: int,
+) -> tuple[str, bool]:
+    """Return (prompt, use_builtin_enhancer) based on global LLM settings."""
+    if not enhance_prompt:
+        return prompt, False
+    if provider in VALID_LLM_PROVIDERS:
+        if not model:
+            gr.Warning("Select an LLM model in Advanced Settings")
+            return prompt, False
+        enhanced = enhance_prompt_with_llm(
+            prompt,
+            provider,
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return enhanced, False
+    if prompt_enhancer_choice == "LLM (Ollama/LM Studio)":
+        gr.Warning("Select an LLM provider in Advanced Settings")
+        return prompt, False
+    return prompt, True
+
+
 def generate_scenes_with_llm(
     theme: str,
     num_scenes: int,
@@ -2353,14 +2361,14 @@ def generate_scenes_with_llm(
     temperature: float = 0.7,
     max_tokens: int | None = None,
 ) -> list[dict]:
-    """Generate scene descriptions from theme using external LLM, then enhance with Gemma.
+    """Generate scene descriptions using LLM, then enhance using global settings.
 
     Args:
         theme: Main theme/idea for the movie
         num_scenes: Number of scenes to generate
         provider: "LM Studio" or "Ollama"
         model: Model name
-        enhance_with_gemma: Whether to enhance each scene with Gemma after LLM generation
+        enhance_with_gemma: Whether to enhance each scene after LLM generation
         temperature: LLM temperature
         max_tokens: Maximum tokens for response (None = no limit)
 
@@ -2457,18 +2465,21 @@ Remember: Output ONLY a valid JSON array with {num_scenes} scene objects. Each o
             if scenes:
                 gr.Info(f"LLM generated {len(scenes)} scenes!")
 
-                # Step 2: Enhance with Gemma if enabled
+                # Step 2: Enhance scenes if enabled
                 if enhance_with_gemma:
-                    gr.Info("Step 2: Enhancing scenes with Gemma...")
+                    gr.Info("Step 2: Enhancing scenes...")
+                    enhance_tokens = int(max_tokens) if max_tokens else 512
                     for i, scene in enumerate(scenes):
-                        enhanced_desc = enhance_scene_with_gemma(
+                        enhanced_desc = enhance_scene_description(
                             scene["description"],
+                            provider,
+                            model,
                             temperature=temperature,
-                            max_tokens=512
+                            max_tokens=enhance_tokens,
                         )
                         scenes[i]["description"] = enhanced_desc
                         scenes[i]["status"] = "enhanced"
-                    gr.Info(f"Gemma enhanced {len(scenes)} scenes!")
+                    gr.Info(f"Enhanced {len(scenes)} scenes!")
 
                 return scenes
 
@@ -2567,7 +2578,7 @@ def generate_scenes_sequentially(
 
     Workflow:
     1. For each scene: generate with context of previous scenes
-    2. After all scenes: apply Gemma enhancement
+    2. After all scenes: apply enhancement using global settings
     3. Yield updates for live UI feedback
 
     Args:
@@ -2575,7 +2586,7 @@ def generate_scenes_sequentially(
         num_scenes: Number of scenes to generate
         provider: "LM Studio" or "Ollama"
         model: Model name
-        enhance_with_gemma: Whether to enhance each scene with Gemma after all are generated
+        enhance_with_gemma: Whether to enhance each scene after all are generated
         temperature: LLM temperature
         max_tokens: Maximum tokens for response (None = no limit)
         progress: Optional Gradio progress object
@@ -2714,18 +2725,21 @@ Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
             gr.Warning(f"Scene {i+1}: Could not extract valid JSON after {MAX_RETRIES} attempts")
             yield scenes, f"Error: Failed to generate scene {i+1} after {MAX_RETRIES} retries"
 
-    # Step 2: Gemma Enhancement (after all scenes are generated)
+    # Step 2: Enhancement (after all scenes are generated)
     if enhance_with_gemma and scenes:
-        yield scenes, "Enhancing all scenes with Gemma..."
+        yield scenes, "Enhancing all scenes..."
 
         for i, scene in enumerate(scenes):
             if progress:
                 progress((i, len(scenes)), desc=f"Enhancing scene {i+1}/{len(scenes)}")
 
-            enhanced_desc = enhance_scene_with_gemma(
+            enhance_tokens = int(max_tokens) if max_tokens else 512
+            enhanced_desc = enhance_scene_description(
                 scene["description"],
+                provider,
+                model,
                 temperature=temperature,
-                max_tokens=512
+                max_tokens=enhance_tokens,
             )
             scenes[i]["description"] = enhanced_desc
             scenes[i]["status"] = "enhanced"
@@ -2743,7 +2757,7 @@ def regenerate_single_scene(
     model: str,
     enhance_with_gemma: bool = True
 ) -> list[dict]:
-    """Regenerate a single scene using LLM + Gemma.
+    """Regenerate a single scene using LLM + enhancement.
 
     Args:
         scenes: Current scenes list
@@ -2751,7 +2765,7 @@ def regenerate_single_scene(
         theme: Original movie theme
         provider: LLM provider
         model: Model name
-        enhance_with_gemma: Whether to enhance with Gemma after LLM
+        enhance_with_gemma: Whether to enhance after LLM
 
     Returns:
         Updated scenes list
@@ -2771,7 +2785,7 @@ def regenerate_single_scene(
 
     context += f"\nGenerate ONE new scene description that fits between these (or as opening/closing scene)."
 
-    # Generate single scene with LLM + optional Gemma enhancement
+    # Generate single scene with LLM + optional enhancement
     new_scenes = generate_scenes_with_llm(
         context, 1, provider, model, enhance_with_gemma
     )
@@ -2808,10 +2822,12 @@ def generate_movie_pipeline(
     use_continuity: bool,
     continuity_strength: float,
     enhance_prompt: bool,
+    prompt_enhancer_choice: str,
+    llm_provider: str,
+    llm_model: str | None,
     temperature: float,
     max_tokens: int,
     tiling_mode: str = "auto",
-    lora_state: list | None = None,
     progress=gr.Progress()
 ):
     """Main pipeline for generating a movie from scenes.
@@ -2825,12 +2841,13 @@ def generate_movie_pipeline(
         fps: Frames per second
         use_continuity: Enable I2V continuity between scenes
         continuity_strength: Strength of I2V conditioning
-        enhance_prompt: Use Gemma to enhance prompts
+        enhance_prompt: Enable prompt enhancement
+        prompt_enhancer_choice: Prompt enhancer selection from settings
+        llm_provider: Global LLM provider
+        llm_model: Global LLM model
         temperature: LLM temperature
         max_tokens: LLM max tokens
         tiling_mode: VAE tiling mode for memory optimization
-        lora_state: List of LoRA configs from the UI
-
     Yields:
         Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log)
     """
@@ -2890,85 +2907,6 @@ def generate_movie_pipeline(
         yield [], None, None, "Error: mlx-video not installed", "", log(f"ERROR: {e}")
         return
 
-    # Prepare LoRA configs
-    lora_configs = prepare_lora_configs_for_generation(lora_state) if lora_state else []
-
-    # Console debug output for LoRA (Movie Generator)
-    print("\n" + "=" * 60)
-    print("LORA DEBUG - Movie Generation Start")
-    print("=" * 60)
-    if lora_state:
-        print(f"lora_state received: {len(lora_state)} LoRA(s)")
-        for i, lora in enumerate(lora_state):
-            print(f"   [{i+1}] {lora.get('name', 'unknown')} - scale: {lora.get('scale', 1.0)}")
-    else:
-        print("lora_state is None or empty!")
-
-    if lora_configs:
-        print(f"lora_configs prepared: {len(lora_configs)} active LoRA(s)")
-        for lora in lora_configs:
-            print(f"   - {lora.get('name', 'unknown')}")
-            print(f"     Scale: {lora.get('scale', 1.0)}")
-            print(f"     Path: {lora.get('path', 'N/A')}")
-            print(f"     Weights: {len(lora.get('weights', {}))} pairs")
-    else:
-        print("No active LoRAs (all filtered out or none selected)")
-    print("=" * 60 + "\n")
-
-    if lora_configs:
-        yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log("[LoRA DEBUG] === LoRA Configuration (Movie) ===")
-        for lora in lora_configs:
-            yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log(f"[LoRA DEBUG] Loading: {lora.get('name', 'unknown')}")
-            yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log(f"[LoRA DEBUG]   - Path: {lora.get('path', 'N/A')}")
-            yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log(f"[LoRA DEBUG]   - Scale: {lora.get('scale', 1.0)}")
-            yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log(f"[LoRA DEBUG]   - Rank: {lora.get('rank', 'auto')}")
-            weights_count = len(lora.get('weights', {}))
-            yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log(f"[LoRA DEBUG]   - Weight keys: {weights_count} pairs")
-        yield [], None, None, "Starting movie generation...", "Preparing LoRA...", log("[LoRA DEBUG] === End Configuration ===")
-
-    # Setup LoRA weight patching if active
-    import mlx.core as mx
-    original_mx_load = mx.load if lora_configs else None
-
-    if lora_configs:
-        def patched_mx_load(path, *args, **load_kwargs):
-            """Load weights and fuse LoRA if this is a transformer model."""
-            print(f"[LoRA DEBUG] Loading weights from: {path}")
-            weights = original_mx_load(path, *args, **load_kwargs)
-
-            # Check if this is the main LTX-2 diffusion transformer (not text encoder)
-            weight_keys = list(weights.keys()) if isinstance(weights, dict) else []
-            is_diffusion_transformer = (
-                "ltx-2" in str(path).lower() and
-                "text_encoder" not in str(path).lower() and
-                any("transformer_blocks" in k for k in weight_keys)
-            )
-
-            print(f"[LoRA DEBUG] Loaded {len(weight_keys)} base weights, is_diffusion_transformer={is_diffusion_transformer}")
-
-            if is_diffusion_transformer and lora_configs:
-                print(f"\nLORA FUSION - Starting weight fusion...")
-                print(f"Fusing LoRA into transformer ({len(weight_keys)} base weights)")
-                for lora in lora_configs:
-                    print(f"   Applying: {lora.get('name', 'unknown')} @ scale {lora.get('scale', 1.0)}")
-                try:
-                    fused, stats = fuse_lora_weights(weights, lora_configs, return_stats=True)
-                    print("LoRA fusion complete!")
-                    print(
-                        f"[LoRA DEBUG] Applied {stats['matched_pairs']}/{stats['total_pairs']} pairs "
-                        f"(no base: {stats['skipped_no_base']}, dims: {stats['skipped_dims']}, shape: {stats['skipped_shape']})"
-                    )
-                    if stats["matched_pairs"] == 0:
-                        print("[LoRA DEBUG] No compatible LoRA weights matched; skipping fusion.")
-                        return weights
-                    return fused
-                except Exception as e:
-                    print(f"LoRA fusion error: {e}")
-                    return weights
-            return weights
-
-        mx.load = patched_mx_load
-
     video_paths = []
     gallery_images = []
     last_frame_path = None
@@ -2992,9 +2930,6 @@ def generate_movie_pipeline(
     for i, scene in enumerate(scenes):
         # Check for cancellation (thread-safe)
         if _movie_generation_cancel_event.is_set():
-            # Restore mx.load if patched
-            if original_mx_load:
-                mx.load = original_mx_load
             yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled by user")
             return
 
@@ -3017,14 +2952,25 @@ def generate_movie_pipeline(
         audio_path = str(output_dir / f"scene_{scene_num:02d}.wav")
 
         # Prepare kwargs
+        effective_prompt, use_builtin_enhancer = resolve_prompt_enhancement(
+            scene_desc,
+            enhance_prompt,
+            prompt_enhancer_choice,
+            llm_provider,
+            llm_model,
+            temperature,
+            max_tokens,
+        )
+        if effective_prompt != scene_desc:
+            log("Scene prompt enhanced using global LLM settings.")
         effective_max_tokens = int(max_tokens)
-        if enhance_prompt and effective_max_tokens > 512:
+        if use_builtin_enhancer and effective_max_tokens > 512:
             log("[WARN] Prompt enhancement max_tokens capped to 512 for stability.")
             effective_max_tokens = 512
         kwargs = {
             "model_repo": "Lightricks/LTX-2",
             "text_encoder_repo": None,
-            "prompt": scene_desc,
+            "prompt": effective_prompt,
             "height": int(height),
             "width": int(width),
             "num_frames": num_frames,
@@ -3033,7 +2979,7 @@ def generate_movie_pipeline(
             "output_path": video_path,
             "output_audio_path": audio_path,
             "verbose": True,
-            "enhance_prompt": enhance_prompt,
+            "enhance_prompt": use_builtin_enhancer,
             "temperature": temperature,
             "max_tokens": effective_max_tokens,
             "tiling": tiling_mode,
@@ -3098,10 +3044,6 @@ def generate_movie_pipeline(
     if failed_scenes:
         yield gallery_images, None, None, "Merging videos...", "Some scenes failed", log(f"\nWARNING: Scenes {failed_scenes} failed after all retries")
 
-    # Restore mx.load if patched
-    if original_mx_load:
-        mx.load = original_mx_load
-
     # Merge all videos
     if len(video_paths) > 0:
         yield gallery_images, None, None, "Merging videos...", "Creating final movie...", log(f"\n=== Merging {len(video_paths)} videos ===")
@@ -3131,18 +3073,17 @@ def generate_video_ui(
     image_strength: float,
     image_frame_idx: int,
     enhance_prompt: bool,
+    prompt_enhancer_choice: str,
+    llm_provider: str,
+    llm_model: str | None,
     temperature: float,
     max_tokens: int,
     save_frames: bool,
     negative_prompt: str,
     tiling_mode: str = "auto",
-    lora_state: list | None = None,
     progress=gr.Progress()
 ):
     """Generate video with audio using mlx-video.
-
-    Args:
-        lora_state: List of LoRA configs from the UI, each with 'weights', 'scale', 'name'
     """
 
     log_messages = []
@@ -3155,44 +3096,7 @@ def generate_video_ui(
         gr.Warning("Please enter a prompt!")
         return None, None, "Error: No prompt provided", ""
 
-    # Prepare LoRA configs
-    lora_configs = prepare_lora_configs_for_generation(lora_state) if lora_state else []
-
-    # Console debug output for LoRA
-    print("\n" + "=" * 60)
-    print("LORA DEBUG - Generation Start")
-    print("=" * 60)
-    if lora_state:
-        print(f"lora_state received: {len(lora_state)} LoRA(s)")
-        for i, lora in enumerate(lora_state):
-            print(f"   [{i+1}] {lora.get('name', 'unknown')} - scale: {lora.get('scale', 1.0)}")
-    else:
-        print("lora_state is None or empty!")
-
-    if lora_configs:
-        print(f"lora_configs prepared: {len(lora_configs)} active LoRA(s)")
-        for lora in lora_configs:
-            print(f"   - {lora.get('name', 'unknown')}")
-            print(f"     Scale: {lora.get('scale', 1.0)}")
-            print(f"     Path: {lora.get('path', 'N/A')}")
-            print(f"     Weights: {len(lora.get('weights', {}))} pairs")
-    else:
-        print("No active LoRAs (all filtered out or none selected)")
-    print("=" * 60 + "\n")
-
-    # Start logging with detailed LoRA debug info
-    if lora_configs:
-        yield None, None, "Starting with LoRA...", log("[LoRA DEBUG] === LoRA Configuration ===")
-        for lora in lora_configs:
-            yield None, None, "Starting with LoRA...", log(f"[LoRA DEBUG] Loading: {lora.get('name', 'unknown')}")
-            yield None, None, "Starting with LoRA...", log(f"[LoRA DEBUG]   - Path: {lora.get('path', 'N/A')}")
-            yield None, None, "Starting with LoRA...", log(f"[LoRA DEBUG]   - Scale: {lora.get('scale', 1.0)}")
-            yield None, None, "Starting with LoRA...", log(f"[LoRA DEBUG]   - Rank: {lora.get('rank', 'auto')}")
-            weights_count = len(lora.get('weights', {}))
-            yield None, None, "Starting with LoRA...", log(f"[LoRA DEBUG]   - Weight keys: {weights_count} pairs")
-        yield None, None, "Starting with LoRA...", log("[LoRA DEBUG] === End Configuration ===")
-    else:
-        yield None, None, "Starting...", log("Importing mlx-video...")
+    yield None, None, "Starting...", log("Importing mlx-video...")
     progress(0.05, desc="Importing mlx-video...")
 
     try:
@@ -3215,14 +3119,26 @@ def generate_video_ui(
 
     try:
         # Prepare kwargs
+        effective_prompt, use_builtin_enhancer = resolve_prompt_enhancement(
+            prompt,
+            enhance_prompt,
+            prompt_enhancer_choice,
+            llm_provider,
+            llm_model,
+            temperature,
+            max_tokens,
+        )
+        if effective_prompt != prompt:
+            log("Prompt enhanced using global LLM settings.")
         effective_max_tokens = int(max_tokens)
-        if enhance_prompt and effective_max_tokens > 512:
+        if use_builtin_enhancer and effective_max_tokens > 512:
             log("[WARN] Prompt enhancement max_tokens capped to 512 for stability.")
             effective_max_tokens = 512
+
         kwargs = {
             "model_repo": "Lightricks/LTX-2",
             "text_encoder_repo": None,
-            "prompt": prompt,
+            "prompt": effective_prompt,
             "height": int(height),
             "width": int(width),
             "num_frames": int(num_frames),
@@ -3231,7 +3147,7 @@ def generate_video_ui(
             "output_path": output_path,
             "output_audio_path": audio_path,
             "verbose": True,
-            "enhance_prompt": enhance_prompt,
+            "enhance_prompt": use_builtin_enhancer,
             "temperature": temperature,
             "max_tokens": effective_max_tokens,
             "tiling": tiling_mode,
@@ -3279,67 +3195,7 @@ def generate_video_ui(
                     return
                 raise
 
-        # Apply LoRA weight fusion if active
-        if lora_configs:
-            yield None, None, "Applying LoRA weights...", log("[LoRA DEBUG] Preparing weight fusion...")
-
-            # Monkey-patch mx.load to intercept weight loading
-            import mlx.core as mx
-            original_mx_load = mx.load
-
-            def patched_mx_load(path, *args, **load_kwargs):
-                """Load weights and fuse LoRA if this is a transformer model."""
-                print(f"[LoRA DEBUG] Loading weights from: {path}")
-                log(f"[LoRA DEBUG] Loading weights from: {path}")
-                weights = original_mx_load(path, *args, **load_kwargs)
-
-                # Check if this is the main LTX-2 diffusion transformer (not text encoder)
-                weight_keys = list(weights.keys()) if isinstance(weights, dict) else []
-                is_diffusion_transformer = (
-                    "ltx-2" in str(path).lower() and
-                    "text_encoder" not in str(path).lower() and
-                    any("transformer_blocks" in k for k in weight_keys)
-                )
-
-                print(f"[LoRA DEBUG] Loaded {len(weight_keys)} base weights, is_diffusion_transformer={is_diffusion_transformer}")
-                log(f"[LoRA DEBUG] Loaded {len(weight_keys)} base weights, is_diffusion_transformer={is_diffusion_transformer}")
-
-                if is_diffusion_transformer and lora_configs:
-                    print(f"\nLORA FUSION - Starting weight fusion...")
-                    print(f"Fusing LoRA into transformer ({len(weight_keys)} base weights)")
-                    log(f"[LoRA DEBUG] Fusing into transformer with {len(weight_keys)} base weights")
-                    for lora in lora_configs:
-                        print(f"   Applying: {lora.get('name', 'unknown')} @ scale {lora.get('scale', 1.0)}")
-                        log(f"[LoRA DEBUG] Applying {lora.get('name', 'unknown')} at scale {lora.get('scale', 1.0)}")
-                    try:
-                        fused, stats = fuse_lora_weights(weights, lora_configs, return_stats=True)
-                        print("LoRA fusion complete!")
-                        log(f"[LoRA DEBUG] Fusion complete!")
-                        log(
-                            f"[LoRA DEBUG] Applied {stats['matched_pairs']}/{stats['total_pairs']} pairs "
-                            f"(no base: {stats['skipped_no_base']}, dims: {stats['skipped_dims']}, shape: {stats['skipped_shape']})"
-                        )
-                        if stats["matched_pairs"] == 0:
-                            log("[LoRA DEBUG] No compatible LoRA weights matched; skipping fusion.")
-                            return weights
-                        return fused
-                    except Exception as e:
-                        print(f"LoRA fusion error: {e}")
-                        log(f"[LoRA DEBUG] Fusion error: {e}")
-                        return weights
-
-                return weights
-
-            # Apply the patch
-            mx.load = patched_mx_load
-
-            try:
-                run_generation_with_fallback(kwargs)
-            finally:
-                # Restore original mx.load
-                mx.load = original_mx_load
-        else:
-            run_generation_with_fallback(kwargs)
+        run_generation_with_fallback(kwargs)
 
         yield None, None, "Encoding final video...", log("Encoding final video with audio...")
         progress(0.9, desc="Encoding final video...")
@@ -3486,19 +3342,39 @@ def create_ui():
         # Clear prompt button
         generation.clear_btn.click(fn=lambda: "", outputs=[generation.prompt])
 
-        # LLM provider change
-        generation.llm_provider.change(
+        # Global LLM provider/model (Advanced Settings)
+        settings.llm_provider.change(
             fn=update_models,
-            inputs=[generation.llm_provider],
-            outputs=[generation.llm_model],
+            inputs=[settings.llm_provider],
+            outputs=[settings.llm_model],
+        )
+        settings.refresh_models_btn.click(
+            fn=update_models,
+            inputs=[settings.llm_provider],
+            outputs=[settings.llm_model],
         )
 
         # Enhance with external LLM
-        # Dual enhance: LLM first, then Gemma
-        def dual_enhance_prompt(current_prompt, provider, model, enhancer_choice, temperature, max_tokens):
+        # Dual enhance: LLM override, Gemma fallback
+        def dual_enhance_prompt(current_prompt, enhancer_choice, provider, model, temperature, max_tokens):
             if not current_prompt.strip():
                 gr.Warning("Enter a prompt first")
                 return current_prompt
+
+            if provider in VALID_LLM_PROVIDERS:
+                if not model:
+                    gr.Warning("Selecteer eerst een LLM model in Advanced Settings!")
+                    return current_prompt
+                gr.Info(f"Enhancing with {provider}...")
+                enhanced = enhance_prompt_with_llm(
+                    current_prompt,
+                    provider,
+                    model,
+                    temperature=temperature,
+                    max_tokens=int(max_tokens),
+                )
+                gr.Info("LLM enhancement complete!")
+                return enhanced
 
             if enhancer_choice == "Gemma (Built-in)":
                 gr.Info("Enhancing with Gemma...")
@@ -3506,14 +3382,8 @@ def create_ui():
                 gr.Info("Gemma enhancement complete!")
                 return enhanced
             elif enhancer_choice == "LLM (Ollama/LM Studio)":
-                if provider and provider != "None":
-                    gr.Info("Enhancing with LLM...")
-                    enhanced = enhance_prompt_with_llm(current_prompt, provider, model)
-                    gr.Info("LLM enhancement complete!")
-                    return enhanced
-                else:
-                    gr.Warning("Selecteer eerst een LLM provider in de Generation tab!")
-                    return current_prompt
+                gr.Warning("Selecteer eerst een LLM provider in Advanced Settings!")
+                return current_prompt
 
             return current_prompt
 
@@ -3521,9 +3391,9 @@ def create_ui():
             fn=dual_enhance_prompt,
             inputs=[
                 generation.prompt,
-                generation.llm_provider,
-                generation.llm_model,
                 settings.prompt_enhancer_choice,
+                settings.llm_provider,
+                settings.llm_model,
                 settings.temperature,
                 settings.max_tokens,
             ],
@@ -3556,58 +3426,6 @@ def create_ui():
             outputs=[settings.text_cfg, settings.cross_modal_cfg],
         )
 
-        # ===== LORA EVENT HANDLERS =====
-
-        # LoRA file upload handler
-        generation.lora_file.change(
-            fn=handle_lora_upload,
-            inputs=[
-                generation.lora_file,
-                generation.lora_state,
-                generation.lora_scale,
-            ],
-            outputs=[
-                generation.lora_state,
-                generation.lora_status,
-            ],
-        )
-
-        # LoRA scale change handler
-        generation.lora_scale.change(
-            fn=handle_lora_scale_change,
-            inputs=[
-                generation.lora_scale,
-                generation.lora_state,
-            ],
-            outputs=[
-                generation.lora_state,
-                generation.lora_status,
-            ],
-        )
-
-        # Scan for LoRAs button
-        generation.scan_loras_btn.click(
-            fn=handle_scan_loras,
-            outputs=[
-                generation.lora_dropdown,
-                generation.lora_status,
-            ],
-        )
-
-        # LoRA dropdown selection handler
-        generation.lora_dropdown.change(
-            fn=handle_lora_dropdown_change,
-            inputs=[
-                generation.lora_dropdown,
-                generation.lora_state,
-                generation.lora_scale,
-            ],
-            outputs=[
-                generation.lora_state,
-                generation.lora_status,
-            ],
-        )
-
         # Main generate button
         generation.generate_btn.click(
             fn=generate_video_ui,
@@ -3622,12 +3440,14 @@ def create_ui():
                 generation.image_strength,
                 generation.image_frame_idx,
                 settings.enhance_prompt_checkbox,
+                settings.prompt_enhancer_choice,
+                settings.llm_provider,
+                settings.llm_model,
                 settings.temperature,
                 settings.max_tokens,
                 generation.save_frames,
                 settings.negative_prompt,
                 generation.tiling_mode,
-                generation.lora_state,
             ],
             outputs=[
                 generation.output_video,
@@ -3690,16 +3510,6 @@ def create_ui():
             fn=on_duration_change_movie,
             inputs=[movie.movie_duration],
             outputs=[movie.num_scenes_display, movie.movie_duration_display],
-        )
-
-        # LLM provider change for movie tab
-        movie.llm_provider.change(fn=update_models, inputs=[movie.llm_provider], outputs=[movie.llm_model])
-
-        # Refresh models button for movie tab
-        movie.refresh_models_btn.click(
-            fn=update_models,
-            inputs=[movie.llm_provider],
-            outputs=[movie.llm_model],
         )
 
         # Resolution preset for movie tab
@@ -3782,14 +3592,14 @@ def create_ui():
             outputs=[movie.script_status, movie.script_dropdown],
         )
 
-        # Generate scenes sequentially with LLM + Gemma enhancement (live updates)
+        # Generate scenes sequentially with LLM + optional enhancement (live updates)
         def on_generate_scenes_sequential(
             theme,
             num_scenes,
-            provider,
-            model,
             enhance_gemma,
             current_scenes,
+            provider,
+            model,
             progress=gr.Progress(),
         ):
             if not theme.strip():
@@ -3814,10 +3624,10 @@ def create_ui():
             inputs=[
                 movie.movie_theme,
                 movie.num_scenes_display,
-                movie.llm_provider,
-                movie.llm_model,
                 movie.enhance_scenes_with_gemma,
                 movie.movie_scenes_state,
+                settings.llm_provider,
+                settings.llm_model,
             ],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe, movie.script_generation_status],
         )
@@ -3859,7 +3669,7 @@ def create_ui():
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
-        # Regenerate single scene with LLM + Gemma
+        # Regenerate single scene with LLM + optional enhancement
         def on_regenerate_scene(scenes, index, theme, provider, model, enhance_gemma):
             if not scenes:
                 gr.Warning("No scenes to regenerate")
@@ -3876,8 +3686,8 @@ def create_ui():
                 movie.movie_scenes_state,
                 movie.scene_to_remove,
                 movie.movie_theme,
-                movie.llm_provider,
-                movie.llm_model,
+                settings.llm_provider,
+                settings.llm_model,
                 movie.enhance_scenes_with_gemma,
             ],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
@@ -3885,25 +3695,6 @@ def create_ui():
 
         # Cancel movie generation
         movie.cancel_movie_btn.click(fn=cancel_movie_generation, outputs=[movie.cancel_movie_btn])
-
-        # Movie LoRA event handlers
-        movie.lora_file.change(
-            fn=handle_lora_upload,
-            inputs=[movie.lora_file, movie.lora_state, movie.lora_scale],
-            outputs=[movie.lora_state, movie.lora_status],
-        )
-
-        movie.lora_scale.change(
-            fn=handle_lora_scale_change,
-            inputs=[movie.lora_scale, movie.lora_state],
-            outputs=[movie.lora_state, movie.lora_status],
-        )
-
-        movie.lora_dropdown.change(
-            fn=handle_lora_dropdown_change,
-            inputs=[movie.lora_dropdown, movie.lora_state, movie.lora_scale],
-            outputs=[movie.lora_state, movie.lora_status],
-        )
 
         # Generate movie
         def on_generate_movie(
@@ -3916,9 +3707,11 @@ def create_ui():
             use_cont,
             cont_strength,
             enhance,
+            prompt_enhancer_choice,
+            llm_provider,
+            llm_model,
             temp,
             max_tok,
-            lora_state,
         ):
             # CRITICAL: Explicitly sync dataframe to scenes before generation
             # This ensures we use the user's edited descriptions, not stale state
@@ -3940,10 +3733,12 @@ def create_ui():
                 use_cont,
                 cont_strength,
                 enhance,
+                prompt_enhancer_choice,
+                llm_provider,
+                llm_model,
                 temp,
                 int(max_tok),
                 tiling_mode=tiling,
-                lora_state=lora_state,
             ):
                 yield result
 
@@ -3959,9 +3754,11 @@ def create_ui():
                 movie.use_continuity,
                 movie.continuity_strength,
                 movie.enhance_prompts,
+                settings.prompt_enhancer_choice,
+                settings.llm_provider,
+                settings.llm_model,
                 movie.temperature,
                 movie.max_tokens,
-                movie.lora_state,
             ],
             outputs=[
                 movie.scene_preview_gallery,
@@ -4020,11 +3817,6 @@ def create_ui():
             lambda v: save_setting("generation", "pb_lighting", v),
             inputs=[generation.pb_lighting]
         )
-        generation.lora_scale.change(
-            lambda v: save_setting("generation", "lora_scale", v),
-            inputs=[generation.lora_scale]
-        )
-
         # Advanced settings tab persistence
         settings.cfg_preset.change(
             lambda v: save_setting("advanced", "cfg_preset", v),
@@ -4041,6 +3833,14 @@ def create_ui():
         settings.prompt_enhancer_choice.change(
             lambda v: save_setting("advanced", "prompt_enhancer", v),
             inputs=[settings.prompt_enhancer_choice]
+        )
+        settings.llm_provider.change(
+            lambda v: save_setting("advanced", "llm_provider", v),
+            inputs=[settings.llm_provider]
+        )
+        settings.llm_model.change(
+            lambda v: save_setting("advanced", "llm_model", v),
+            inputs=[settings.llm_model]
         )
         settings.enhance_prompt_checkbox.change(
             lambda v: save_setting("advanced", "enhance_prompt", v),
@@ -4088,10 +3888,6 @@ def create_ui():
             lambda v: save_setting("movie", "tiling_mode", v),
             inputs=[movie.tiling_mode]
         )
-        movie.lora_scale.change(
-            lambda v: save_setting("movie", "lora_scale", v),
-            inputs=[movie.lora_scale]
-        )
         movie.use_continuity.change(
             lambda v: save_setting("movie", "use_continuity", v),
             inputs=[movie.use_continuity]
@@ -4132,12 +3928,13 @@ def create_ui():
                 generation.image_strength,
                 generation.pb_camera,
                 generation.pb_lighting,
-                generation.lora_scale,
                 # Advanced settings tab
                 settings.cfg_preset,
                 settings.text_cfg,
                 settings.cross_modal_cfg,
                 settings.prompt_enhancer_choice,
+                settings.llm_provider,
+                settings.llm_model,
                 settings.enhance_prompt_checkbox,
                 settings.temperature,
                 settings.max_tokens,
@@ -4150,7 +3947,6 @@ def create_ui():
                 movie.fps,
                 movie.resolution_preset,
                 movie.tiling_mode,
-                movie.lora_scale,
                 movie.use_continuity,
                 movie.continuity_strength,
                 movie.enhance_prompts,

@@ -13,9 +13,6 @@ class MovieGeneratorTabComponents:
     movie_duration: gr.Slider
     movie_duration_display: gr.Textbox
     num_scenes_display: gr.Number
-    llm_provider: gr.Dropdown
-    llm_model: gr.Dropdown
-    refresh_models_btn: gr.Button
     enhance_scenes_with_gemma: gr.Checkbox
     generate_scenes_btn: gr.Button
     script_generation_status: gr.Textbox
@@ -36,12 +33,6 @@ class MovieGeneratorTabComponents:
     height: gr.Number
     fps: gr.Slider
     tiling_mode: gr.Dropdown
-    # LoRA components
-    lora_file: gr.File
-    lora_scale: gr.Slider
-    lora_dropdown: gr.Dropdown
-    lora_status: gr.Textbox
-    lora_state: gr.State
     # Generation settings
     use_continuity: gr.Checkbox
     continuity_strength: gr.Slider
@@ -122,34 +113,14 @@ def build_movie_generator_tab(
                     maximum=max_scenes,
                 )
 
-                gr.Markdown("### AI Scene Writer (LLM + Gemma)")
-                gr.Markdown("*Step 1: LLM writes script | Step 2: Gemma enhances each scene*")
+                gr.Markdown("### AI Scene Writer (LLM + Enhancer)")
+                gr.Markdown("*Step 1: LLM writes script | Step 2: Enhances each scene*")
+                gr.Markdown("LLM provider is set in Advanced Settings.")
                 with gr.Group():
-                    with gr.Row():
-                        llm_provider = gr.Dropdown(
-                            choices=["LM Studio", "Ollama"],
-                            value="LM Studio",
-                            label="LLM Provider (Script)",
-                            scale=1,
-                        )
-                        llm_model = gr.Dropdown(
-                            choices=[],
-                            label="Model",
-                            interactive=True,
-                            scale=2,
-                            allow_custom_value=True,
-                        )
-                    refresh_models_btn = gr.Button(
-                        "Refresh Models",
-                        variant="secondary",
-                        size="sm",
-                        elem_classes="secondary-btn",
-                    )
-
                     enhance_scenes_with_gemma = gr.Checkbox(
-                        label="Enhance scenes with Gemma (Step 2)",
+                        label="Enhance scenes (Step 2)",
                         value=True,
-                        info="After LLM generates script, Gemma optimizes each scene for LTX-2",
+                        info="Uses global LLM provider when set, otherwise Gemma",
                     )
 
                     generate_scenes_btn = gr.Button("Generate Script", variant="primary", size="sm")
@@ -254,35 +225,6 @@ def build_movie_generator_tab(
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
 
-                with gr.Accordion("LoRA Settings", open=False):
-                    gr.Markdown("*Load LoRA adapters to customize LTX-2 video style*")
-                    lora_state = gr.State([])
-                    lora_file = gr.File(
-                        label="Upload LoRA (.safetensors)",
-                        file_types=[".safetensors"],
-                        file_count="multiple",
-                    )
-                    lora_scale = gr.Slider(
-                        minimum=0.0,
-                        maximum=2.0,
-                        value=1.0,
-                        step=0.1,
-                        label="LoRA Scale",
-                        info="0=disabled, 1=normal, >1=stronger effect",
-                    )
-                    lora_dropdown = gr.Dropdown(
-                        choices=[],
-                        label="Found LoRAs",
-                        multiselect=True,
-                        interactive=True,
-                    )
-                    lora_status = gr.Textbox(
-                        label="LoRA Status",
-                        interactive=False,
-                        max_lines=2,
-                        placeholder="Upload or select LoRA files...",
-                    )
-
                 with gr.Group():
                     with gr.Row():
                         use_continuity = gr.Checkbox(
@@ -298,9 +240,9 @@ def build_movie_generator_tab(
                             label="Continuity Strength",
                         )
                     enhance_prompts = gr.Checkbox(
-                        label="Final Gemma polish during generation",
+                        label="Final prompt enhancement during generation",
                         value=True,
-                        info="Extra Gemma enhancement when generating each scene",
+                        info="Uses global LLM provider when set, otherwise Gemma",
                     )
                     with gr.Row(visible=True):
                         temperature = gr.Slider(
@@ -377,9 +319,6 @@ def build_movie_generator_tab(
         movie_duration=movie_duration,
         movie_duration_display=movie_duration_display,
         num_scenes_display=num_scenes_display,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        refresh_models_btn=refresh_models_btn,
         enhance_scenes_with_gemma=enhance_scenes_with_gemma,
         generate_scenes_btn=generate_scenes_btn,
         script_generation_status=script_generation_status,
@@ -400,11 +339,6 @@ def build_movie_generator_tab(
         height=height,
         fps=fps,
         tiling_mode=tiling_mode,
-        lora_file=lora_file,
-        lora_scale=lora_scale,
-        lora_dropdown=lora_dropdown,
-        lora_status=lora_status,
-        lora_state=lora_state,
         use_continuity=use_continuity,
         continuity_strength=continuity_strength,
         enhance_prompts=enhance_prompts,

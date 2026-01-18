@@ -24,8 +24,6 @@ PROMPT_TIPS_MARKDOWN = """
 @dataclass
 class GenerationTabComponents:
     prompt: gr.Textbox
-    llm_provider: gr.Dropdown
-    llm_model: gr.Dropdown
     enhance_btn: gr.Button
     clear_btn: gr.Button
     pb_camera: gr.Dropdown
@@ -53,13 +51,6 @@ class GenerationTabComponents:
     random_seed_btn: gr.Button
     save_frames: gr.Checkbox
     tiling_mode: gr.Dropdown
-    # LoRA components
-    lora_file: gr.File
-    lora_scale: gr.Slider
-    scan_loras_btn: gr.Button
-    lora_dropdown: gr.Dropdown
-    lora_status: gr.Textbox
-    lora_state: gr.State
     # I2V components
     input_image: gr.Image
     image_strength: gr.Slider
@@ -93,21 +84,6 @@ def build_generation_tab(
                     max_lines=8,
                     elem_classes="prompt-input",
                 )
-
-                with gr.Row():
-                    llm_provider = gr.Dropdown(
-                        choices=["None", "LM Studio", "Ollama"],
-                        value="None",
-                        label="LLM",
-                        scale=1,
-                    )
-                    llm_model = gr.Dropdown(
-                        choices=[],
-                        label="Model",
-                        interactive=False,
-                        scale=2,
-                        allow_custom_value=True,
-                    )
                 with gr.Row():
                     enhance_btn = gr.Button(
                         "Enhance Prompt",
@@ -279,42 +255,6 @@ def build_generation_tab(
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
 
-                with gr.Accordion("LoRA Settings", open=False):
-                    gr.Markdown("*Load LoRA adapters to customize LTX-2 video generation style*")
-                    lora_state = gr.State([])
-                    lora_file = gr.File(
-                        label="Upload LoRA (.safetensors)",
-                        file_types=[".safetensors"],
-                        file_count="multiple",
-                    )
-                    lora_scale = gr.Slider(
-                        minimum=0.0,
-                        maximum=2.0,
-                        value=1.0,
-                        step=0.1,
-                        label="LoRA Scale",
-                        info="0=disabled, 1=normal, >1=stronger effect",
-                    )
-                    with gr.Row():
-                        scan_loras_btn = gr.Button(
-                            "Scan Downloads",
-                            variant="secondary",
-                            size="sm",
-                            elem_classes="secondary-btn",
-                        )
-                    lora_dropdown = gr.Dropdown(
-                        choices=[],
-                        label="Found LoRAs",
-                        multiselect=True,
-                        interactive=True,
-                    )
-                    lora_status = gr.Textbox(
-                        label="LoRA Status",
-                        interactive=False,
-                        max_lines=3,
-                        placeholder="Upload or select LoRA files...",
-                    )
-
                 with gr.Accordion("Image to Video (I2V)", open=False):
                     input_image = gr.Image(
                         label="Input Image (optional)",
@@ -356,8 +296,6 @@ def build_generation_tab(
 
     return GenerationTabComponents(
         prompt=prompt,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
         enhance_btn=enhance_btn,
         clear_btn=clear_btn,
         pb_camera=pb_camera,
@@ -385,12 +323,6 @@ def build_generation_tab(
         random_seed_btn=random_seed_btn,
         save_frames=save_frames,
         tiling_mode=tiling_mode,
-        lora_file=lora_file,
-        lora_scale=lora_scale,
-        scan_loras_btn=scan_loras_btn,
-        lora_dropdown=lora_dropdown,
-        lora_status=lora_status,
-        lora_state=lora_state,
         input_image=input_image,
         image_strength=image_strength,
         image_frame_idx=image_frame_idx,
