@@ -157,9 +157,9 @@ FFMPEG_INSTALLED = check_ffmpeg()
 # ===== MOVIE GENERATOR CONSTANTS =====
 MAX_SCENE_DURATION = 20  # Max seconds per scene (LTX-2 supports up to 20 sec!)
 DEFAULT_SCENE_DURATION = 6  # Default duration (increased from 4)
-MAX_SCENES = 1000  # Maximum number of scenes (enough for ~1.5 hour film)
+MAX_SCENES = 5000  # Maximum number of scenes (very long films)
 MIN_MOVIE_DURATION = 6  # Minimum total movie duration in seconds
-MAX_MOVIE_DURATION = 10800  # Maximum 3 hours (Hollywood film length)
+MAX_MOVIE_DURATION = 86400  # Maximum 24 hours (practical limit)
 
 # Script Storage Directory
 SCRIPTS_DIR = Path.home() / ".mlx-video-ui" / "scripts"
@@ -2828,6 +2828,7 @@ def generate_movie_pipeline(
     temperature: float,
     max_tokens: int,
     tiling_mode: str = "auto",
+    stream_output: bool = False,
     progress=gr.Progress()
 ):
     """Main pipeline for generating a movie from scenes.
@@ -2847,6 +2848,7 @@ def generate_movie_pipeline(
         llm_model: Global LLM model
         temperature: LLM temperature
         max_tokens: LLM max tokens
+        stream_output: Update the final movie after each scene
         tiling_mode: VAE tiling mode for memory optimization
     Yields:
         Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log)
@@ -2899,6 +2901,10 @@ def generate_movie_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     yield [], None, None, "Starting movie generation...", "Preparing...", log(f"Output directory: {output_dir}")
+
+    stream_output_path = None
+    if stream_output:
+        stream_output_path = str(OUTPUT_DIR / f"movie_stream_{uuid.uuid4().hex[:8]}.mp4")
 
     # Import video generation
     try:
@@ -3009,6 +3015,13 @@ def generate_movie_pipeline(
                     video_paths.append(video_path)
                     yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Video complete", log(f"Video saved: {video_path}")
 
+                    if stream_output and stream_output_path:
+                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Updating stream...", log("Updating streaming output...")
+                        if merge_videos_ffmpeg(video_paths, stream_output_path, fps):
+                            yield gallery_images, video_path, stream_output_path, overall_status, f"Scene {scene_num}: Stream updated", log(f"Streaming output updated: {stream_output_path}")
+                        else:
+                            yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Stream failed", log("WARNING: Streaming merge failed")
+
                     # Extract thumbnail for gallery
                     thumb_path = str(output_dir / f"thumb_{scene_num:02d}.jpg")
                     if extract_frame_ffmpeg(video_path, thumb_path, "first"):
@@ -3046,6 +3059,15 @@ def generate_movie_pipeline(
 
     # Merge all videos
     if len(video_paths) > 0:
+        final_path = stream_output_path if stream_output_path and os.path.exists(stream_output_path) else None
+        if final_path:
+            progress(1.0, desc="Complete!")
+            success_msg = f"Complete! {len(video_paths)}/{total_scenes} scenes merged"
+            if failed_scenes:
+                success_msg += f" ({len(failed_scenes)} failed)"
+            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}")
+            return
+
         yield gallery_images, None, None, "Merging videos...", "Creating final movie...", log(f"\n=== Merging {len(video_paths)} videos ===")
         progress(0.9, desc="Merging videos...")
 
@@ -3707,6 +3729,7 @@ def create_ui():
             use_cont,
             cont_strength,
             enhance,
+            stream_output,
             prompt_enhancer_choice,
             llm_provider,
             llm_model,
@@ -3739,6 +3762,7 @@ def create_ui():
                 temp,
                 int(max_tok),
                 tiling_mode=tiling,
+                stream_output=bool(stream_output),
             ):
                 yield result
 
@@ -3754,6 +3778,7 @@ def create_ui():
                 movie.use_continuity,
                 movie.continuity_strength,
                 movie.enhance_prompts,
+                movie.stream_output,
                 settings.prompt_enhancer_choice,
                 settings.llm_provider,
                 settings.llm_model,

@@ -37,6 +37,7 @@ class MovieGeneratorTabComponents:
     use_continuity: gr.Checkbox
     continuity_strength: gr.Slider
     enhance_prompts: gr.Checkbox
+    stream_output: gr.Checkbox
     temperature: gr.Slider
     max_tokens: gr.Slider
     generate_movie_btn: gr.Button
@@ -244,6 +245,11 @@ def build_movie_generator_tab(
                         value=True,
                         info="Uses global LLM provider when set, otherwise Gemma",
                     )
+                    stream_output = gr.Checkbox(
+                        label="Streaming output (update final movie each scene)",
+                        value=False,
+                        info="Updates the final movie after each scene (slower)",
+                    )
                     with gr.Row(visible=True):
                         temperature = gr.Slider(
                             minimum=0.0,
@@ -342,6 +348,7 @@ def build_movie_generator_tab(
         use_continuity=use_continuity,
         continuity_strength=continuity_strength,
         enhance_prompts=enhance_prompts,
+        stream_output=stream_output,
         temperature=temperature,
         max_tokens=max_tokens,
         generate_movie_btn=generate_movie_btn,
