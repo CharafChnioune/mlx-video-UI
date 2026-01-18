@@ -2,6 +2,8 @@
 
 Modern Gradio UI for generating videos with audio using mlx-video on Apple Silicon.
 
+Developer of mlx-video: The MLX King (https://x.com/Prince_Canuma?s=20)
+
 ## Requirements
 - Python 3.11+
 - uv (https://docs.astral.sh/uv/)
