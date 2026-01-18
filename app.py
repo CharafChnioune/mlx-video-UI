@@ -2464,18 +2464,23 @@ ENHANCED SCENE (only the description, no explanation):"""
 
 def enhance_scene_description(
     scene_description: str,
+    prompt_enhancer_choice: str,
     provider: str,
     model: str | None,
     temperature: float,
     max_tokens: int,
 ) -> str:
-    """Enhance scenes using LLM when configured, otherwise Gemma."""
+    """Enhance scenes using global settings."""
     if provider in VALID_LLM_PROVIDERS:
         if not model:
             gr.Warning("Select an LLM model in Advanced Settings")
             return scene_description
         return enhance_scene_with_llm(scene_description, provider, model, temperature, max_tokens)
-    return enhance_scene_with_gemma(scene_description, temperature=temperature, max_tokens=max_tokens)
+    if prompt_enhancer_choice == "Gemma (Built-in)":
+        return enhance_scene_with_gemma(scene_description, temperature=temperature, max_tokens=max_tokens)
+    if prompt_enhancer_choice == "LLM (Ollama/LM Studio)":
+        gr.Warning("Select an LLM provider in Advanced Settings")
+    return scene_description
 
 
 def resolve_prompt_enhancement(
@@ -2519,6 +2524,7 @@ def generate_scenes_with_llm(
     audio_style: str,
     character_notes: str,
     setting_notes: str,
+    prompt_enhancer_choice: str,
     story_summary: str = "",
     recent_scenes: list[dict] | None = None,
     enhance_with_gemma: bool = True,
@@ -2648,6 +2654,7 @@ def generate_scenes_with_llm(
                     for i, scene in enumerate(scenes):
                         enhanced_desc = enhance_scene_description(
                             scene["description"],
+                            prompt_enhancer_choice,
                             provider,
                             model,
                             temperature=temperature,
@@ -2684,6 +2691,7 @@ def generate_scenes_in_batches(
     audio_style: str,
     character_notes: str,
     setting_notes: str,
+    prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
     max_tokens: int | None = None,
@@ -2723,6 +2731,7 @@ def generate_scenes_in_batches(
             audio_style,
             character_notes,
             setting_notes,
+            prompt_enhancer_choice,
             story_summary=story_summary,
             recent_scenes=recent_scenes,
             enhance_with_gemma=False,
@@ -2754,6 +2763,7 @@ def generate_scenes_in_batches(
                 progress((i, len(scenes)), desc=f"Enhancing scene {i + 1}/{len(scenes)}")
             enhanced_desc = enhance_scene_description(
                 scene["description"],
+                prompt_enhancer_choice,
                 provider,
                 model,
                 temperature=temperature,
@@ -2843,6 +2853,7 @@ def generate_scenes_sequentially(
     audio_style: str,
     character_notes: str,
     setting_notes: str,
+    prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True,
     temperature: float = 0.7,
     max_tokens: int | None = None,
@@ -3032,6 +3043,7 @@ Return ONLY a JSON object: {{"description": "...", "duration": N}}"""
             enhance_tokens = int(max_tokens) if max_tokens else 512
             enhanced_desc = enhance_scene_description(
                 scene["description"],
+                prompt_enhancer_choice,
                 provider,
                 model,
                 temperature=temperature,
@@ -3057,6 +3069,7 @@ def regenerate_single_scene(
     audio_style: str,
     character_notes: str,
     setting_notes: str,
+    prompt_enhancer_choice: str,
     enhance_with_gemma: bool = True
 ) -> list[dict]:
     """Regenerate a single scene using LLM + enhancement.
@@ -3099,6 +3112,7 @@ def regenerate_single_scene(
         audio_style,
         character_notes,
         setting_notes,
+        prompt_enhancer_choice,
         story_summary=context,
         recent_scenes=[],
         enhance_with_gemma=enhance_with_gemma,
@@ -3960,6 +3974,7 @@ def create_ui():
             current_scenes,
             provider,
             model,
+            prompt_enhancer_choice,
             temperature,
             max_tokens,
             progress=gr.Progress(),
@@ -3989,6 +4004,7 @@ def create_ui():
                     audio_style,
                     character_notes,
                     setting_notes,
+                    prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
                     max_tokens=int(max_tokens),
@@ -4006,6 +4022,7 @@ def create_ui():
                     audio_style,
                     character_notes,
                     setting_notes,
+                    prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
                     max_tokens=int(max_tokens),
@@ -4034,6 +4051,7 @@ def create_ui():
                 movie.movie_scenes_state,
                 settings.llm_provider,
                 settings.llm_model,
+                settings.prompt_enhancer_choice,
                 settings.temperature,
                 settings.max_tokens,
             ],
@@ -4090,6 +4108,7 @@ def create_ui():
             audio_style,
             character_notes,
             setting_notes,
+            prompt_enhancer_choice,
             enhance_gemma,
         ):
             if not scenes:
@@ -4108,6 +4127,7 @@ def create_ui():
                 audio_style,
                 character_notes,
                 setting_notes,
+                prompt_enhancer_choice,
                 enhance_gemma,
             )
             return new_scenes, scenes_to_dataframe(new_scenes)
@@ -4126,6 +4146,7 @@ def create_ui():
                 movie.audio_style,
                 movie.character_notes,
                 movie.setting_notes,
+                settings.prompt_enhancer_choice,
                 movie.enhance_scenes_with_gemma,
             ],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
