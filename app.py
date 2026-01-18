@@ -1975,6 +1975,9 @@ Create EXACTLY {num_scenes} new scenes that continue the story.
 Each scene MUST include:
 - Visual description (subject, action, camera movement, lighting)
 - Audio description (ambient, foley, music, dialogue + language/accent if any)
+- Specific characters by name and setting details (time/place/props)
+
+If any movie bible section is missing, invent it and keep it consistent across scenes.
 
 Duration rules:
 - Aim for ~{pacing_seconds}s per scene
@@ -2840,6 +2843,127 @@ def extract_scene_json(response: str) -> dict | None:
         return {"description": desc, "duration": duration}
 
     return None
+
+
+def extract_json_object(response: str) -> dict | None:
+    """Extract a JSON object from a response string."""
+    if not response:
+        return None
+    match = re.search(r'\{[\s\S]*\}', response)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def generate_movie_bible(
+    theme: str,
+    provider: str,
+    model: str,
+    temperature: float,
+) -> dict:
+    """Generate a movie bible with style, audio, characters, and setting."""
+    prompt = f"""Create a concise movie bible for this film idea:
+
+{theme}
+
+Return ONLY valid JSON with keys:
+- visual_style: 1-2 sentences
+- audio_style: 1-2 sentences
+- characters: main characters with names, roles, relationships, voice/accent
+- setting: time period, locations, mood, key props
+"""
+    messages = [
+        {"role": "system", "content": "You create cinematic movie bibles."},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        if provider == "LM Studio":
+            resp = requests.post(
+                f"{LM_STUDIO_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": float(temperature),
+                    "max_tokens": 400,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices or "message" not in choices[0]:
+                return {}
+            response = choices[0]["message"].get("content", "").strip()
+        elif provider == "Ollama":
+            resp = requests.post(
+                f"{OLLAMA_BASE}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": float(temperature), "num_predict": 400},
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            response = data.get("message", {}).get("content", "").strip()
+        else:
+            return {}
+    except Exception as e:
+        print(f"[DEBUG] Movie bible error: {e}")
+        return {}
+
+    data = extract_json_object(response)
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+def auto_fill_movie_bible(
+    theme: str,
+    provider: str,
+    model: str | None,
+    temperature: float,
+    style_notes: str,
+    audio_style: str,
+    character_notes: str,
+    setting_notes: str,
+) -> tuple[str, str, str, str, str]:
+    """Auto-generate missing movie bible fields."""
+    missing = [
+        not style_notes.strip(),
+        not audio_style.strip(),
+        not character_notes.strip(),
+        not setting_notes.strip(),
+    ]
+    if not any(missing):
+        return style_notes, audio_style, character_notes, setting_notes, "Movie bible already set"
+
+    if provider not in VALID_LLM_PROVIDERS or not model:
+        gr.Warning("Set an LLM provider + model in Advanced Settings to auto-generate the movie bible.")
+        return style_notes, audio_style, character_notes, setting_notes, "Movie bible missing"
+
+    data = generate_movie_bible(theme, provider, model, temperature)
+    if not data:
+        gr.Warning("Movie bible generation failed; fill it manually.")
+        return style_notes, audio_style, character_notes, setting_notes, "Movie bible generation failed"
+
+    resolved_style = style_notes.strip() or data.get("visual_style", "").strip()
+    resolved_audio = audio_style.strip() or data.get("audio_style", "").strip()
+    resolved_characters = character_notes.strip() or data.get("characters", "").strip()
+    resolved_setting = setting_notes.strip() or data.get("setting", "").strip()
+
+    return (
+        resolved_style or style_notes,
+        resolved_audio or audio_style,
+        resolved_characters or character_notes,
+        resolved_setting or setting_notes,
+        "Movie bible auto-generated",
+    )
 
 
 def generate_scenes_sequentially(
@@ -3981,8 +4105,38 @@ def create_ui():
         ):
             if not theme.strip():
                 gr.Warning("Please enter a movie theme first!")
-                yield current_scenes, scenes_to_dataframe(current_scenes), "Error: No theme provided"
+                yield (
+                    current_scenes,
+                    scenes_to_dataframe(current_scenes),
+                    "Error: No theme provided",
+                    style_notes,
+                    audio_style,
+                    character_notes,
+                    setting_notes,
+                )
                 return
+
+            resolved_style, resolved_audio, resolved_characters, resolved_setting, bible_status = auto_fill_movie_bible(
+                theme,
+                provider,
+                model,
+                temperature,
+                style_notes,
+                audio_style,
+                character_notes,
+                setting_notes,
+            )
+
+            if bible_status == "Movie bible auto-generated":
+                yield (
+                    current_scenes,
+                    scenes_to_dataframe(current_scenes),
+                    bible_status,
+                    resolved_style,
+                    resolved_audio,
+                    resolved_characters,
+                    resolved_setting,
+                )
 
             mode = script_mode or "Auto (recommended)"
             num_scenes_int = int(num_scenes)
@@ -4000,10 +4154,10 @@ def create_ui():
                     model,
                     structure,
                     pacing,
-                    style_notes,
-                    audio_style,
-                    character_notes,
-                    setting_notes,
+                    resolved_style,
+                    resolved_audio,
+                    resolved_characters,
+                    resolved_setting,
                     prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
@@ -4018,10 +4172,10 @@ def create_ui():
                     model,
                     structure,
                     pacing,
-                    style_notes,
-                    audio_style,
-                    character_notes,
-                    setting_notes,
+                    resolved_style,
+                    resolved_audio,
+                    resolved_characters,
+                    resolved_setting,
                     prompt_enhancer_choice,
                     enhance_with_gemma=enhance_gemma,
                     temperature=temperature,
@@ -4033,7 +4187,15 @@ def create_ui():
             # Use the selected generator for live updates
             for scenes, status in generator:
                 df_data = scenes_to_dataframe(scenes) if scenes else []
-                yield scenes, df_data, status
+                yield (
+                    scenes,
+                    df_data,
+                    status,
+                    resolved_style,
+                    resolved_audio,
+                    resolved_characters,
+                    resolved_setting,
+                )
 
         movie.generate_scenes_btn.click(
             fn=on_generate_scenes_sequential,
@@ -4055,7 +4217,15 @@ def create_ui():
                 settings.temperature,
                 settings.max_tokens,
             ],
-            outputs=[movie.movie_scenes_state, movie.scenes_dataframe, movie.script_generation_status],
+            outputs=[
+                movie.movie_scenes_state,
+                movie.scenes_dataframe,
+                movie.script_generation_status,
+                movie.style_notes,
+                movie.audio_style,
+                movie.character_notes,
+                movie.setting_notes,
+            ],
         )
 
         # Sync dataframe changes to state
