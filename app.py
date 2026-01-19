@@ -318,11 +318,18 @@ def load_all_settings():
 # "Comprehensive yet factual, describing only what is seen and heard without emotional interpretation"
 SCENE_WRITER_SYSTEM_PROMPT = """You are a professional screenwriter creating scenes for LTX-2 AI video generation with synchronized audio.
 
-CRITICAL: Follow the LTX-2 paper's captioning guidelines:
+CRITICAL: Follow the LTX-2 paper's captioning guidelines and be extremely specific:
 - Be COMPREHENSIVE yet FACTUAL
 - Describe ONLY what is seen and heard
 - NO emotional interpretation or subjective commentary
 - Include BOTH visual AND audio elements
+- Add micro details (wind/briesje, fabric movement, reflections, dust, small sounds)
+
+CONTINUITY (VERY IMPORTANT):
+- Scenes are one continuous film, not standalone clips
+- Each scene must explicitly connect to the previous scene via a shared visual/audio anchor
+- If time/location changes, describe the transition (e.g., match cut, sound bridge, dissolve)
+- End each scene with a concrete hook that can carry into the next scene
 
 OUTPUT FORMAT (JSON array):
 [
@@ -343,6 +350,7 @@ PROMPT STRUCTURE (per LTX-2 paper):
 4. LIGHTING: "...soft golden hour lighting...", "...dramatic shadows...", "...blue hour ambiance..."
 5. AUDIO cues: "...birds singing, footsteps on gravel...", "...engine rumbling, wind noise..."
 6. BE SPECIFIC: NOT "ambient sounds" but "distant traffic, wind through trees, church bells"
+7. MICRO DETAIL: breeze direction + effect, fabric rustle, hair movement, tiny debris, reflections
 7. SPEECH/DIALOGUE: Include ACTUAL dialogue text that characters speak!
 
 SPEECH/DIALOGUE RULES (CRITICAL):
@@ -357,12 +365,14 @@ VISUAL ELEMENTS:
 - Lighting: natural daylight, golden hour, blue hour, dramatic shadows, soft diffused, backlit, neon/artificial, candlelight, moonlight
 - Subject: detailed appearance, specific actions, expressions
 - Environment: setting details, atmosphere, weather, time of day
+- Lens/DOF: focal length, depth of field, film grain, lens flare, bokeh
 
 AUDIO ELEMENTS (LTX-2 supports stereo 24kHz):
 - Ambient: specific environmental sounds (wind through leaves, distant traffic, crowd murmur, ocean waves)
 - Foley: precise sound effects (footsteps on gravel, rustling fabric, door creaking, glass clinking)
 - Music: style, mood, instruments, or "no music" for natural atmosphere
 - Speech: ACTUAL dialogue with speaker description, language, AND accent (e.g., "male voice says: 'Hello there!' in American English")
+- Micro audio: room tone, air movement, cloth creak, small impacts
 
 RULES:
 1. Output ONLY valid JSON array, no other text
@@ -371,7 +381,7 @@ RULES:
 4. Ensure continuity between scenes
 5. Be factual - describe what is seen/heard, no interpretation
 6. Include ACTUAL spoken dialogue, not just descriptions of speech
-7. Fill visual_style, audio_style, characters, setting for every scene
+7. Fill visual_style, audio_style, characters, setting for every scene with dense detail
 
 EXAMPLE for theme "A day in the forest":
 [
@@ -421,6 +431,9 @@ CRITICAL RULES:
 2. Maintain visual consistency: same characters, locations, lighting style
 3. Maintain narrative flow: actions have consequences, time progresses logically
 4. Each scene description must be self-contained but reference shared elements
+5. Include micro details: breeze/wind effects, fabric movement, reflections, tiny sounds
+6. Open with a continuity anchor from the previous scene (sound, motion, object)
+7. End with a clear hook that sets up the next scene
 
 CHARACTER CONSISTENCY (VERY IMPORTANT):
 If a main character was described (from reference image), ensure this character:
@@ -444,6 +457,7 @@ DESCRIPTION GUIDELINES (per LTX-2 paper):
 - Specify lighting and atmosphere
 - Add ambient audio and sound effects
 - Be factual, not emotional
+- Add concrete specifics: textures, colors, props, wardrobe, micro-actions
 
 SPEECH/DIALOGUE RULES (CRITICAL):
 - Include ACTUAL dialogue text that characters speak
@@ -457,12 +471,14 @@ VISUAL ELEMENTS:
 - Lighting: natural daylight, golden hour, blue hour, dramatic shadows, soft diffused, backlit, neon/artificial
 - Subject: detailed appearance, specific actions, expressions
 - Environment: setting details, atmosphere, weather, time of day
+- Lens/DOF: focal length, depth of field, film grain, lens flare, bokeh
 
 AUDIO ELEMENTS (LTX-2 supports stereo 24kHz):
 - Ambient: specific environmental sounds (wind, traffic, crowd, ocean)
 - Foley: precise sound effects (footsteps, rustling, doors, glass)
 - Music: style, mood, instruments, or "no music" for natural atmosphere
 - Speech: ACTUAL dialogue with speaker description, language, AND accent (e.g., "she says: 'Hello!' in British English")
+- Micro audio: room tone, air movement, cloth creak, small impacts
 """
 
 # LLM API endpoints
@@ -1688,28 +1704,21 @@ def enhance_prompt_with_llm(
 
     gr.Info(f"Enhancing prompt met {provider}...")
 
-    # System message that preserves user intent while adding prompt techniques
+    # System message that expands detail while preserving intent
     system_message = """Je bent een video+audio prompt engineer voor het LTX-2 model.
 
-KRITIEKE REGEL: BEHOUD DE OORSPRONKELIJKE INTENTIE VAN DE GEBRUIKER!
-- VOEG GEEN details toe die de gebruiker niet heeft gespecificeerd
-- Als de gebruiker "een vrouw" zegt, voeg GEEN haarkleur/leeftijd/kleding toe
-- Als de gebruiker "een auto" zegt, voeg GEEN kleur/merk/model toe
-- Gebruik alleen de informatie die de gebruiker heeft gegeven
+DOEL: Maak de prompt VEEL specifieker en rijker aan details, zonder de intentie te veranderen.
+- Behoud onderwerp, actie, setting en stijl van de gebruiker
+- Voeg concrete details toe als ze ontbreken (plausibel en consistent)
+- Geef personen volledig detail: leeftijdsrange, lichaamsbouw, huidtint, haar, kleding, accessoires, houding, gezichtsuitdrukking
+- Beschrijf omgeving: materialen, texturen, kleuren, weersomstandigheden, tijd van dag, props
+- Camera: shot type, lens, afstand, beweging, compositie, depth of field
+- Licht: richting, kwaliteit, kleurtemperatuur, schaduwen
+- Audio: ambience, foley, ruimte/afstand, wind/briesje + wat het doet en hoe het klinkt
+- Als er mensen zijn, voeg 1-2 korte dialogregels toe met spreker + taal/accent
 
-JE TAAK: Voeg ALLEEN prompt-technieken toe:
-1. CAMERA beweging: tracking shot, pan, dolly, static wide shot, etc.
-2. BELICHTING: natural lighting, soft diffused light, golden hour (als niet gespecificeerd)
-3. AUDIO cues: ambient sounds passend bij de scene, no music (tenzij gevraagd)
-4. STRUCTUUR: Herformuleer naar subject → action → setting
-
-VOORBEELD:
-INPUT: "een vrouw loopt in het bos"
-OUTPUT: "A woman walks through a forest, camera tracking alongside at eye level, natural daylight filtering through the trees. Audio: footsteps on forest floor, birds in the distance, gentle wind through leaves."
-
-NIET: "A young woman with auburn hair..." (voegt onnodige details toe!)
-
-Antwoord ALLEEN met de verbeterde prompt in het Engels, geen uitleg."""
+STRUCTUUR: subject → action → setting → camera → lighting → audio → dialogue
+Antwoord ALLEEN met de verbeterde prompt in het Engels, 1-2 korte paragrafen, geen uitleg."""
 
     try:
         if provider == "LM Studio":
@@ -1960,10 +1969,13 @@ Recent scenes:
 Create EXACTLY {num_scenes} new scenes that continue the story.
 Each scene MUST include:
 - description: full visual + audio description (subject, action, camera movement, lighting, sound)
+- include micro details like breeze direction + effect, fabric rustle, reflections, small sounds
+- if characters appear, fully describe them (appearance, wardrobe, expression) and include spoken dialogue lines
 - visual_style: cinematic look (lens, palette, grain, depth of field)
 - audio_style: score/foley/soundscape style and intensity
 - characters: names, roles, relationships, voice/accent
 - setting: time period, locations, mood, key props
+- Continuity rule: start with a shared anchor from the previous scene and end with a hook for the next
 
 Duration rules:
 - Aim for ~{pacing_seconds}s per scene
@@ -2358,13 +2370,16 @@ def enhance_scene_with_gemma(scene_description: str, temperature: float = 0.7, m
     try:
         enhance_prompt = f"""Enhance this scene description for LTX-2 video generation.
 
-RULES (LTX-2 paper):
-1. Be COMPREHENSIVE but FACTUAL
-2. Describe BOTH visual AND audio elements
-3. Specify: subject, action, camera movement, lighting
-4. Specify: ambient sounds, foley, music, speech with language/accent
-5. NO emotional interpretation - only describe what is seen and heard
-6. Be detailed and specific, not vague
+RULES (LTX-2 paper + high detail):
+1. Be COMPREHENSIVE but FACTUAL; expand to high detail without changing intent
+2. Visuals: subject appearance (age range, build, hair, clothing, textures), action, micro-actions, environment materials/props, weather, time of day
+3. Camera: shot size, lens, movement, angle, framing, depth of field
+4. Lighting/color: direction, quality, color temperature, shadows, reflections
+5. Audio: ambience, foley, room tone, wind/briesje with effects, music or "no music"
+6. Dialogue: include actual spoken lines with speaker + language/accent; if no speech, say "No dialogue."
+7. Preserve continuity cues already present (location, time, ongoing actions); do NOT introduce new story events or characters
+8. No interpretation or emotions unless shown physically; describe only what is seen/heard
+9. Target length: 80-180 words, concrete and specific
 
 ORIGINAL SCENE:
 {scene_description}
@@ -2411,13 +2426,16 @@ def enhance_scene_with_llm(
     try:
         enhance_prompt = f"""Enhance this scene description for LTX-2 video generation.
 
-RULES (LTX-2 paper):
-1. Be COMPREHENSIVE but FACTUAL
-2. Describe BOTH visual AND audio elements
-3. Specify: subject, action, camera movement, lighting
-4. Specify: ambient sounds, foley, music, speech with language/accent
-5. NO emotional interpretation - only describe what is seen and heard
-6. Be detailed and specific, not vague
+RULES (LTX-2 paper + high detail):
+1. Be COMPREHENSIVE but FACTUAL; expand to high detail without changing intent
+2. Visuals: subject appearance (age range, build, hair, clothing, textures), action, micro-actions, environment materials/props, weather, time of day
+3. Camera: shot size, lens, movement, angle, framing, depth of field
+4. Lighting/color: direction, quality, color temperature, shadows, reflections
+5. Audio: ambience, foley, room tone, wind/briesje with effects, music or "no music"
+6. Dialogue: include actual spoken lines with speaker + language/accent; if no speech, say "No dialogue."
+7. Preserve continuity cues already present (location, time, ongoing actions); do NOT introduce new story events or characters
+8. No interpretation or emotions unless shown physically; describe only what is seen/heard
+9. Target length: 80-180 words, concrete and specific
 
 ORIGINAL SCENE:
 {scene_description}
@@ -2926,6 +2944,7 @@ def generate_scenes_sequentially(
         user_prompt = f"""{context}
 Now write Scene {i+1} of {num_scenes}.
 Continue the story naturally and maintain continuity.
+If this is not Scene 1, open with a continuity anchor from the prior scene (sound, motion, object) and end with a hook for the next.
 Return ONLY a JSON object: {{"description": "...", "duration": N, "visual_style": "...", "audio_style": "...", "characters": "...", "setting": "..."}}"""
 
         # Retry loop for robustness
@@ -4055,19 +4074,21 @@ def create_ui():
             outputs=[movie.movie_scenes_state],
         )
 
-        # Add scene
-        def on_add_scene(scenes):
-            new_scenes = add_empty_scene(scenes if scenes else [])
+        # Add scene - use dataframe as source of truth to avoid Gradio state sync issues
+        def on_add_scene(df_data):
+            scenes = dataframe_to_scenes(df_data) if df_data is not None and len(df_data) > 0 else []
+            new_scenes = add_empty_scene(scenes)
             return new_scenes, scenes_to_dataframe(new_scenes)
 
         movie.add_scene_btn.click(
             fn=on_add_scene,
-            inputs=[movie.movie_scenes_state],
+            inputs=[movie.scenes_dataframe],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
-        # Remove scene
-        def on_remove_scene(scenes, index):
+        # Remove scene - use dataframe as source of truth to avoid Gradio state sync issues
+        def on_remove_scene(df_data, index):
+            scenes = dataframe_to_scenes(df_data) if df_data is not None and len(df_data) > 0 else []
             if not scenes:
                 return scenes, []
             new_scenes = remove_scene_at_index(scenes, int(index))
@@ -4075,13 +4096,14 @@ def create_ui():
 
         movie.remove_scene_btn.click(
             fn=on_remove_scene,
-            inputs=[movie.movie_scenes_state, movie.scene_to_remove],
+            inputs=[movie.scenes_dataframe, movie.scene_to_remove],
             outputs=[movie.movie_scenes_state, movie.scenes_dataframe],
         )
 
         # Regenerate single scene with LLM + optional enhancement
+        # Use dataframe as source of truth to avoid Gradio state sync issues
         def on_regenerate_scene(
-            scenes,
+            df_data,
             index,
             theme,
             provider,
@@ -4091,6 +4113,7 @@ def create_ui():
             prompt_enhancer_choice,
             enhance_gemma,
         ):
+            scenes = dataframe_to_scenes(df_data) if df_data is not None and len(df_data) > 0 else []
             if not scenes:
                 gr.Warning("No scenes to regenerate")
                 return scenes, scenes_to_dataframe(scenes) if scenes else []
@@ -4111,7 +4134,7 @@ def create_ui():
         movie.regenerate_scene_btn.click(
             fn=on_regenerate_scene,
             inputs=[
-                movie.movie_scenes_state,
+                movie.scenes_dataframe,
                 movie.scene_to_remove,
                 movie.movie_theme,
                 settings.llm_provider,

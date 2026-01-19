@@ -51,6 +51,7 @@ class GenerationTabComponents:
     random_seed_btn: gr.Button
     save_frames: gr.Checkbox
     tiling_mode: gr.Dropdown
+    stream_output: gr.Checkbox
     # I2V components
     input_image: gr.Image
     image_strength: gr.Slider
@@ -254,6 +255,12 @@ def build_generation_tab(
                         label="VAE Tiling Mode",
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
+                    stream_output = gr.Checkbox(
+                        label="Stream Output",
+                        value=False,
+                        info="Write frames progressively (requires tiling enabled)",
+                        visible=False,  # Hidden: API streaming not supported
+                    )
 
                 with gr.Accordion("Image to Video (I2V)", open=False):
                     input_image = gr.Image(
@@ -323,6 +330,7 @@ def build_generation_tab(
         random_seed_btn=random_seed_btn,
         save_frames=save_frames,
         tiling_mode=tiling_mode,
+        stream_output=stream_output,
         input_image=input_image,
         image_strength=image_strength,
         image_frame_idx=image_frame_idx,
