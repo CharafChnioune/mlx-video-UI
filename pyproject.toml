@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Gradio UI for MLX Video Generator"
 requires-python = ">=3.11"
 dependencies = [
-    "mlx-video @ file:///Users/charafchnioune/Desktop/Code/mlxpoort/mlx-video",
+    "mlx-video @ file:///Users/charafchnioune/Desktop/Code/mlxpoort/mlxvideoui/mlx-video-UI/mlx-video",
     "gradio>=4.0.0",
     "requests",
 ]

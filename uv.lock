@@ -968,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "mlx-video"
-source = { directory = "../../mlx-video" }
+source = { directory = "mlx-video" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "mlx" },
@@ -1011,7 +1011,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "gradio", specifier = ">=4.0.0" },
-    { name = "mlx-video", directory = "../../mlx-video" },
+    { name = "mlx-video", directory = "mlx-video" },
     { name = "requests" },
 ]
 
