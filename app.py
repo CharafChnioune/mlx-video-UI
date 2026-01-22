@@ -3505,11 +3505,26 @@ def generate_video_ui(
         log_messages.append(msg)
         return "\n".join(log_messages)
 
+    streaming_active = pipeline_type == "dev" and stream_output and tiling_mode != "none"
+    hidden_video = gr.update(visible=False, value=None) if streaming_active else None
+    hidden_audio = gr.update(visible=False, value=None) if streaming_active else None
+    show_preview = gr.update(visible=True) if streaming_active else None
+
+    def emit(video_val, audio_val, preview_val, status_val, log_val):
+        if streaming_active:
+            if video_val is None:
+                video_val = hidden_video
+            if audio_val is None:
+                audio_val = hidden_audio
+            if preview_val is None:
+                preview_val = show_preview
+        yield video_val, audio_val, preview_val, status_val, log_val
+
     if not prompt.strip():
         gr.Warning("Please enter a prompt!")
         return None, None, None, "Error: No prompt provided", ""
 
-    yield None, None, None, "Starting...", log("Importing mlx-video...")
+    yield from emit(None, None, None, "Starting...", log("Importing mlx-video..."))
     progress(0.05, desc="Importing mlx-video...")
 
     try:
@@ -3519,7 +3534,7 @@ def generate_video_ui(
             from mlx_video.generate_av import generate_video_with_audio
     except ImportError as e:
         error_msg = f"Error: mlx-video not installed. Run: uv sync\n{e}"
-        yield None, None, None, error_msg, log(error_msg)
+        yield from emit(None, None, None, error_msg, log(error_msg))
         return
 
     # Create output paths
@@ -3530,7 +3545,7 @@ def generate_video_ui(
     output_path = str(OUTPUT_DIR / f"video_{video_id}.mp4")
     audio_path = str(temp_dir / f"video_{video_id}.wav")
 
-    yield None, None, None, "Loading models...", log("Loading models...")
+    yield from emit(None, None, None, "Loading models...", log("Loading models..."))
     progress(0.1, desc="Loading models...")
 
     try:
@@ -3574,7 +3589,7 @@ def generate_video_ui(
             # Validate image file exists
             if not os.path.exists(input_image):
                 error_msg = f"Image file not found: {input_image}"
-                yield None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
+                yield from emit(None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}"))
                 return
 
             # Validate file extension
@@ -3582,15 +3597,15 @@ def generate_video_ui(
             ext = os.path.splitext(input_image)[1].lower()
             if ext not in valid_extensions:
                 error_msg = f"Invalid image format: {ext}. Use PNG, JPG, JPEG, WebP, BMP, or GIF"
-                yield None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
+                yield from emit(None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}"))
                 return
 
             kwargs["image"] = input_image
             kwargs["image_strength"] = image_strength
             kwargs["image_frame_idx"] = int(image_frame_idx)
-            yield None, None, None, "Processing input image...", log(f"Using image: {input_image}")
+            yield from emit(None, None, None, "Processing input image...", log(f"Using image: {input_image}"))
 
-        yield None, None, None, "Generating video latents...", log("Generating video latents (Stage 1)...")
+        yield from emit(None, None, None, "Generating video latents...", log("Generating video latents (Stage 1)..."))
         progress(0.2, desc="Generating video latents...")
 
         if pipeline_type == "dev":
@@ -3658,11 +3673,11 @@ def generate_video_ui(
                         frame_idx, frame = frame_queue.get(timeout=0.5)
                         frames_received += 1
                         progress(0.2 + 0.7 * (frames_received / int(num_frames)), desc=f"Decoding frame {frame_idx + 1}...")
-                        yield None, None, latest_frame[0], f"Streaming: frame {frame_idx + 1}...", log(f"Frame {frame_idx + 1} received")
+                        yield from emit(None, None, latest_frame[0], f"Streaming: frame {frame_idx + 1}...", log(f"Frame {frame_idx + 1} received"))
                     except queue.Empty:
                         # No frame available, yield current state
                         if latest_frame[0] is not None:
-                            yield None, None, latest_frame[0], f"Generating... ({frames_received} frames)", "\n".join(log_messages)
+                            yield from emit(None, None, latest_frame[0], f"Generating... ({frames_received} frames)", "\n".join(log_messages))
                         continue
 
                 # Wait for generation to complete
@@ -3734,7 +3749,7 @@ def generate_video_ui(
 
             run_generation_with_fallback(kwargs)
 
-        yield None, None, None, "Encoding final video...", log("Encoding final video with audio...")
+        yield from emit(None, None, None, "Encoding final video...", log("Encoding final video with audio..."))
         progress(0.9, desc="Encoding final video...")
 
         # Check if files exist
@@ -3745,7 +3760,7 @@ def generate_video_ui(
         frames_saved = 0
         frames_dir = None
         if save_frames and video_out:
-            yield None, None, None, "Saving individual frames...", log("Saving individual frames as PNG...")
+            yield from emit(None, None, None, "Saving individual frames...", log("Saving individual frames as PNG..."))
             progress(0.92, desc="Saving frames...")
             try:
                 from PIL import Image
@@ -3783,10 +3798,10 @@ def generate_video_ui(
             log(f"Video opgeslagen op: {video_out}")
             gr.Warning("FFmpeg niet geïnstalleerd! Run: brew install ffmpeg")
             # Return path as string in status instead of video component
-            yield None, audio_out, None, f"{status}\n\n📁 Video: {video_out}", "\n".join(log_messages)
+            yield from emit(None, audio_out, None, f"{status}\n\n📁 Video: {video_out}", "\n".join(log_messages))
             return
 
-        yield video_out, audio_out, None, status, "\n".join(log_messages)
+        yield from emit(video_out, audio_out, None, status, "\n".join(log_messages))
 
     except Exception as e:
         error_msg = str(e)
@@ -3797,7 +3812,7 @@ def generate_video_ui(
             error_msg = f"Generation failed: {error_msg}"
         gr.Warning(error_msg)
         log(f"ERROR: {error_msg}")
-        yield None, None, None, error_msg, "\n".join(log_messages)
+        yield from emit(None, None, None, error_msg, "\n".join(log_messages))
 
 
 def _patch_ltx_attention_mask_alignment() -> None:
@@ -4510,13 +4525,27 @@ def create_ui():
         )
 
         def update_streaming_preview_visibility(stream_output):
-            """Show streaming preview when stream output is enabled."""
-            return gr.update(visible=stream_output)
+            """Show streaming preview when stream output is enabled and hide loaders."""
+            if stream_output:
+                return (
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                )
+            return (
+                gr.update(visible=True),
+                gr.update(visible=True),
+                gr.update(visible=False),
+            )
 
         generation.stream_output.change(
             fn=update_streaming_preview_visibility,
             inputs=[generation.stream_output],
-            outputs=[generation.streaming_preview],
+            outputs=[
+                generation.output_video,
+                generation.output_audio,
+                generation.streaming_preview,
+            ],
         )
 
         # Main generate button
