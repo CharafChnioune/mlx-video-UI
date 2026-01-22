@@ -3506,6 +3506,10 @@ def generate_video_ui(
         return "\n".join(log_messages)
 
     streaming_active = pipeline_type == "dev" and stream_output and tiling_mode != "none"
+    progress_cb = progress
+    if streaming_active:
+        def progress_cb(*_args, **_kwargs):
+            return None
     hidden_video = gr.update(visible=False, value=None) if streaming_active else None
     hidden_audio = gr.update(visible=False, value=None) if streaming_active else None
     show_preview = gr.update(visible=True) if streaming_active else None
@@ -3525,7 +3529,7 @@ def generate_video_ui(
         return None, None, None, "Error: No prompt provided", ""
 
     yield from emit(None, None, None, "Starting...", log("Importing mlx-video..."))
-    progress(0.05, desc="Importing mlx-video...")
+    progress_cb(0.05, desc="Importing mlx-video...")
 
     try:
         if pipeline_type == "dev":
@@ -3546,7 +3550,7 @@ def generate_video_ui(
     audio_path = str(temp_dir / f"video_{video_id}.wav")
 
     yield from emit(None, None, None, "Loading models...", log("Loading models..."))
-    progress(0.1, desc="Loading models...")
+    progress_cb(0.1, desc="Loading models...")
 
     try:
         # Prepare kwargs
@@ -3606,7 +3610,7 @@ def generate_video_ui(
             yield from emit(None, None, None, "Processing input image...", log(f"Using image: {input_image}"))
 
         yield from emit(None, None, None, "Generating video latents...", log("Generating video latents (Stage 1)..."))
-        progress(0.2, desc="Generating video latents...")
+        progress_cb(0.2, desc="Generating video latents...")
 
         if pipeline_type == "dev":
             # Dev pipeline with CFG support
@@ -3672,7 +3676,7 @@ def generate_video_ui(
                     try:
                         frame_idx, frame = frame_queue.get(timeout=0.5)
                         frames_received += 1
-                        progress(0.2 + 0.7 * (frames_received / int(num_frames)), desc=f"Decoding frame {frame_idx + 1}...")
+                        progress_cb(0.2 + 0.7 * (frames_received / int(num_frames)), desc=f"Decoding frame {frame_idx + 1}...")
                         yield from emit(None, None, latest_frame[0], f"Streaming: frame {frame_idx + 1}...", log(f"Frame {frame_idx + 1} received"))
                     except queue.Empty:
                         # No frame available, yield current state
@@ -3750,7 +3754,7 @@ def generate_video_ui(
             run_generation_with_fallback(kwargs)
 
         yield from emit(None, None, None, "Encoding final video...", log("Encoding final video with audio..."))
-        progress(0.9, desc="Encoding final video...")
+        progress_cb(0.9, desc="Encoding final video...")
 
         # Check if files exist
         video_out = output_path if os.path.exists(output_path) else None
@@ -3761,7 +3765,7 @@ def generate_video_ui(
         frames_dir = None
         if save_frames and video_out:
             yield from emit(None, None, None, "Saving individual frames...", log("Saving individual frames as PNG..."))
-            progress(0.92, desc="Saving frames...")
+            progress_cb(0.92, desc="Saving frames...")
             try:
                 from PIL import Image
                 import cv2
@@ -3784,7 +3788,7 @@ def generate_video_ui(
             except Exception as e:
                 log(f"Warning: Could not save frames: {e}")
 
-        progress(1.0, desc="Done!")
+        progress_cb(1.0, desc="Done!")
 
         status = f"Generated: {num_frames} frames @ {width}x{height}, {fps} FPS, seed={seed}"
         if frames_saved > 0:
@@ -4582,6 +4586,7 @@ def create_ui():
                 generation.status,
                 generation.generation_log,
             ],
+            show_progress="hidden",
         )
 
         # ===== MOVIE GENERATOR EVENT HANDLERS =====
