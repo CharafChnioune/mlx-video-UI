@@ -36,6 +36,10 @@ class MovieGeneratorTabComponents:
     height: gr.Number
     fps: gr.Slider
     tiling_mode: gr.Dropdown
+    # Pipeline settings (Dev model)
+    pipeline_type: gr.Dropdown
+    cfg_scale: gr.Slider
+    num_inference_steps: gr.Slider
     # Generation settings
     use_continuity: gr.Checkbox
     continuity_strength: gr.Slider
@@ -47,6 +51,7 @@ class MovieGeneratorTabComponents:
     cancel_movie_btn: gr.Button
     overall_progress_md: gr.Textbox
     scene_progress_md: gr.Textbox
+    progress_bar: gr.Slider
     scene_preview_gallery: gr.Gallery
     current_scene_video: gr.Video
     final_movie_output: gr.Video
@@ -273,6 +278,32 @@ def build_movie_generator_tab(
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
 
+                with gr.Accordion("Pipeline Settings", open=False):
+                    pipeline_type = gr.Dropdown(
+                        choices=["distilled", "dev"],
+                        value="distilled",
+                        label="Pipeline",
+                        info="'dev' enables CFG (slower, higher quality)",
+                    )
+                    cfg_scale = gr.Slider(
+                        minimum=1.0,
+                        maximum=15.0,
+                        value=4.0,
+                        step=0.5,
+                        label="CFG Scale",
+                        info="Classifier-Free Guidance scale (only for dev pipeline)",
+                        visible=False,
+                    )
+                    num_inference_steps = gr.Slider(
+                        minimum=10,
+                        maximum=100,
+                        value=40,
+                        step=5,
+                        label="Inference Steps",
+                        info="Number of denoising steps (only for dev pipeline)",
+                        visible=False,
+                    )
+
                 with gr.Group():
                     with gr.Row():
                         use_continuity = gr.Checkbox(
@@ -336,6 +367,14 @@ def build_movie_generator_tab(
                     interactive=False,
                     max_lines=1,
                 )
+                progress_bar = gr.Slider(
+                    minimum=0,
+                    maximum=100,
+                    value=0,
+                    label="Progress",
+                    interactive=False,
+                    elem_classes="progress-bar-slider",
+                )
 
                 gr.Markdown("### Scene Previews")
                 scene_preview_gallery = gr.Gallery(
@@ -395,6 +434,9 @@ def build_movie_generator_tab(
         height=height,
         fps=fps,
         tiling_mode=tiling_mode,
+        pipeline_type=pipeline_type,
+        cfg_scale=cfg_scale,
+        num_inference_steps=num_inference_steps,
         use_continuity=use_continuity,
         continuity_strength=continuity_strength,
         enhance_prompts=enhance_prompts,
@@ -405,6 +447,7 @@ def build_movie_generator_tab(
         cancel_movie_btn=cancel_movie_btn,
         overall_progress_md=overall_progress_md,
         scene_progress_md=scene_progress_md,
+        progress_bar=progress_bar,
         scene_preview_gallery=scene_preview_gallery,
         current_scene_video=current_scene_video,
         final_movie_output=final_movie_output,

@@ -137,10 +137,11 @@ def build_advanced_settings_tab(
 
                 gr.Markdown("### Other")
                 negative_prompt = gr.Textbox(
-                    label="Negative Prompt (NOT YET SUPPORTED)",
-                    placeholder="Not yet supported by mlx-video...",
+                    label="Negative Prompt (Legacy)",
+                    placeholder="Use Pipeline Settings > Dev pipeline for CFG + negative prompts",
                     lines=2,
-                    info="mlx-video does not support negative prompts yet",
+                    info="Negative prompts now work with the Dev pipeline in Generation tab",
+                    interactive=False,
                 )
 
     return AdvancedSettingsTabComponents(

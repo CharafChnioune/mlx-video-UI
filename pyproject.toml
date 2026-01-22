@@ -8,10 +8,14 @@ version = "0.1.0"
 description = "Gradio UI for MLX Video Generator"
 requires-python = ">=3.11"
 dependencies = [
-    "mlx-video @ git+https://github.com/Blaizzy/mlx-video.git@pc/add-streaming",
+    "mlx-video @ file:///Users/charafchnioune/Desktop/Code/mlxpoort/mlx-video",
     "gradio>=4.0.0",
     "requests",
 ]
 
 [project.scripts]
 mlx-video-ui = "app:main"
+
+[tool.setuptools]
+py-modules = ["app"]
+packages = ["ui", "ui.tabs"]

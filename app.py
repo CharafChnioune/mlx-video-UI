@@ -3176,7 +3176,9 @@ def generate_movie_pipeline(
     max_tokens: int,
     tiling_mode: str = "auto",
     stream_output: bool = False,
-    progress=gr.Progress()
+    pipeline_type: str = "distilled",
+    cfg_scale: float = 4.0,
+    num_inference_steps: int = 40,
 ):
     """Main pipeline for generating a movie from scenes.
 
@@ -3197,8 +3199,11 @@ def generate_movie_pipeline(
         max_tokens: LLM max tokens
         stream_output: Update the final movie after each scene
         tiling_mode: VAE tiling mode for memory optimization
+        pipeline_type: Pipeline type ('distilled' or 'dev')
+        cfg_scale: CFG scale for dev pipeline
+        num_inference_steps: Number of inference steps for dev pipeline
     Yields:
-        Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log)
+        Tuple of (gallery_images, current_video, final_video, overall_status, scene_status, log, progress_pct)
     """
     # Reset cancel event for new generation (thread-safe)
     _movie_generation_cancel_event.clear()
@@ -3210,7 +3215,7 @@ def generate_movie_pipeline(
         return "\n".join(log_messages)
 
     if not scenes:
-        yield [], None, None, "Error: No scenes", "", log("ERROR: No scenes to generate")
+        yield [], None, None, "Error: No scenes", "", log("ERROR: No scenes to generate"), 0
         return
 
     # Validate scenes - filter out empty prompts
@@ -3223,41 +3228,45 @@ def generate_movie_pipeline(
         valid_scenes.append(scene)
 
     if not valid_scenes:
-        yield [], None, None, "Error: All scenes have empty descriptions", "", log("ERROR: No valid scenes to generate. All scene descriptions are empty.")
+        yield [], None, None, "Error: All scenes have empty descriptions", "", log("ERROR: No valid scenes to generate. All scene descriptions are empty."), 0
         return
 
     # Replace scenes with validated list
     scenes = valid_scenes
-    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Validated {len(scenes)} scenes with non-empty descriptions")
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Validated {len(scenes)} scenes with non-empty descriptions"), 0
 
     # Log all scene prompts that will be used
-    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("\n=== SCENE PROMPTS TO BE GENERATED ===")
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("\n=== SCENE PROMPTS TO BE GENERATED ==="), 0
     for i, scene in enumerate(scenes):
         desc = build_scene_generation_prompt(scene)
         duration = scene.get("duration", DEFAULT_SCENE_DURATION)
-        yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Scene {i+1} ({duration}s): {desc[:80]}{'...' if len(desc) > 80 else ''}")
-    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("=" * 40)
+        yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log(f"Scene {i+1} ({duration}s): {desc[:80]}{'...' if len(desc) > 80 else ''}"), 0
+    yield [], None, None, f"Validated {len(scenes)} scenes", "Preparing...", log("=" * 40), 0
 
     # Validate FFmpeg
     if not FFMPEG_INSTALLED:
-        yield [], None, None, "Error: FFmpeg required", "", log("ERROR: FFmpeg not installed. Run: brew install ffmpeg")
+        yield [], None, None, "Error: FFmpeg required", "", log("ERROR: FFmpeg not installed. Run: brew install ffmpeg"), 0
         return
 
     # Setup output directory
     output_dir = Path(tempfile.gettempdir()) / "mlx_movie_ui" / uuid.uuid4().hex[:8]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    yield [], None, None, "Starting movie generation...", "Preparing...", log(f"Output directory: {output_dir}")
+    yield [], None, None, "Starting movie generation...", "Preparing...", log(f"Output directory: {output_dir}"), 0
 
     stream_output_path = None
     if stream_output:
         stream_output_path = str(OUTPUT_DIR / f"movie_stream_{uuid.uuid4().hex[:8]}.mp4")
 
-    # Import video generation
+    # Import video generation based on pipeline type
     try:
-        from mlx_video.generate_av import generate_video_with_audio
+        if pipeline_type == "dev":
+            from mlx_video.generate_dev import generate_video_dev
+            log(f"Using Dev pipeline: CFG={cfg_scale}, steps={num_inference_steps}")
+        else:
+            from mlx_video.generate_av import generate_video_with_audio
     except ImportError as e:
-        yield [], None, None, "Error: mlx-video not installed", "", log(f"ERROR: {e}")
+        yield [], None, None, "Error: mlx-video not installed", "", log(f"ERROR: {e}"), 0
         return
 
     video_paths = []
@@ -3269,21 +3278,28 @@ def generate_movie_pipeline(
 
     def run_scene_generation(active_kwargs):
         try:
-            generate_video_with_audio(**active_kwargs)
+            if pipeline_type == "dev":
+                generate_video_dev(**active_kwargs)
+            else:
+                generate_video_with_audio(**active_kwargs)
             return
         except Exception as e:
             if active_kwargs.get("enhance_prompt"):
                 log(f"[WARN] Prompt enhancement failed: {e}. Retrying without enhancement.")
                 fallback_kwargs = dict(active_kwargs)
                 fallback_kwargs["enhance_prompt"] = False
-                generate_video_with_audio(**fallback_kwargs)
+                if pipeline_type == "dev":
+                    generate_video_dev(**fallback_kwargs)
+                else:
+                    generate_video_with_audio(**fallback_kwargs)
                 return
             raise
 
     for i, scene in enumerate(scenes):
         # Check for cancellation (thread-safe)
         if _movie_generation_cancel_event.is_set():
-            yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled by user")
+            progress_pct = int((i / total_scenes) * 100)
+            yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled by user"), progress_pct
             return
 
         scene_num = i + 1
@@ -3294,11 +3310,10 @@ def generate_movie_pipeline(
         overall_status = f"Movie: {scene_num}/{total_scenes} scenes"
         scene_status = f"Generating Scene {scene_num}..."
 
-        yield gallery_images, None, None, overall_status, scene_status, log(f"\n=== Scene {scene_num}/{total_scenes} ===")
-        yield gallery_images, None, None, overall_status, scene_status, log(f"Description: {scene_desc[:100]}...")
-        yield gallery_images, None, None, overall_status, scene_status, log(f"Duration: {scene_duration}s ({num_frames} frames)")
-
-        progress((i / total_scenes), desc=f"Generating scene {scene_num}/{total_scenes}")
+        progress_pct = int((i / total_scenes) * 100)
+        yield gallery_images, None, None, overall_status, scene_status, log(f"\n=== Scene {scene_num}/{total_scenes} ==="), progress_pct
+        yield gallery_images, None, None, overall_status, scene_status, log(f"Description: {scene_desc[:100]}..."), progress_pct
+        yield gallery_images, None, None, overall_status, scene_status, log(f"Duration: {scene_duration}s ({num_frames} frames)"), progress_pct
 
         # Prepare paths
         video_path = str(output_dir / f"scene_{scene_num:02d}.mp4")
@@ -3320,30 +3335,53 @@ def generate_movie_pipeline(
         if use_builtin_enhancer and effective_max_tokens > 512:
             log("[WARN] Prompt enhancement max_tokens capped to 512 for stability.")
             effective_max_tokens = 512
-        kwargs = {
-            "model_repo": "Lightricks/LTX-2",
-            "text_encoder_repo": None,
-            "prompt": effective_prompt,
-            "height": int(height),
-            "width": int(width),
-            "num_frames": num_frames,
-            "seed": random.randint(0, 2147483647),
-            "fps": int(fps),
-            "output_path": video_path,
-            "output_audio_path": audio_path,
-            "verbose": True,
-            "enhance_prompt": use_builtin_enhancer,
-            "temperature": temperature,
-            "max_tokens": effective_max_tokens,
-            "tiling": tiling_mode,
-        }
+        if pipeline_type == "dev":
+            # Dev pipeline with CFG support
+            kwargs = {
+                "model_repo": "mlx-community/LTX-2-dev-bf16",
+                "text_encoder_repo": None,
+                "prompt": effective_prompt,
+                "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
+                "height": int(height),
+                "width": int(width),
+                "num_frames": num_frames,
+                "num_inference_steps": int(num_inference_steps),
+                "cfg_scale": float(cfg_scale),
+                "seed": random.randint(0, 2147483647),
+                "fps": int(fps),
+                "output_path": video_path,
+                "output_audio_path": audio_path,
+                "verbose": True,
+                "enhance_prompt": use_builtin_enhancer,
+                "tiling": tiling_mode,
+                "audio": True,
+            }
+        else:
+            # Distilled pipeline (original)
+            kwargs = {
+                "model_repo": "Lightricks/LTX-2",
+                "text_encoder_repo": None,
+                "prompt": effective_prompt,
+                "height": int(height),
+                "width": int(width),
+                "num_frames": num_frames,
+                "seed": random.randint(0, 2147483647),
+                "fps": int(fps),
+                "output_path": video_path,
+                "output_audio_path": audio_path,
+                "verbose": True,
+                "enhance_prompt": use_builtin_enhancer,
+                "temperature": temperature,
+                "max_tokens": effective_max_tokens,
+                "tiling": tiling_mode,
+            }
 
         # Add I2V continuity: use last frame of previous scene for smooth transitions
         if use_continuity and last_frame_path and os.path.exists(last_frame_path):
             kwargs["image"] = last_frame_path
             kwargs["image_strength"] = continuity_strength
             kwargs["image_frame_idx"] = 0
-            yield gallery_images, None, None, overall_status, scene_status, log(f"Using I2V continuity (strength: {continuity_strength})")
+            yield gallery_images, None, None, overall_status, scene_status, log(f"Using I2V continuity (strength: {continuity_strength})"), progress_pct
 
         # Retry loop for scene generation
         scene_success = False
@@ -3351,35 +3389,37 @@ def generate_movie_pipeline(
             try:
                 # Generate video
                 if attempt > 0:
-                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Retry {attempt}...", log(f"Retry {attempt}/{MAX_SCENE_RETRIES} for scene {scene_num}...")
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Retry {attempt}...", log(f"Retry {attempt}/{MAX_SCENE_RETRIES} for scene {scene_num}..."), progress_pct
                     # Use a new seed for retry
                     kwargs["seed"] = random.randint(0, 2147483647)
 
-                yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Generating video...", log("Generating video with audio...")
+                yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Generating video...", log("Generating video with audio..."), progress_pct
                 run_scene_generation(kwargs)
 
                 if os.path.exists(video_path):
                     video_paths.append(video_path)
-                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Video complete", log(f"Video saved: {video_path}")
+                    # Update progress after scene completion
+                    progress_pct = int(((i + 1) / total_scenes) * 100)
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Video complete", log(f"Video saved: {video_path}"), progress_pct
 
                     if stream_output and stream_output_path:
-                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Updating stream...", log("Updating streaming output...")
+                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Updating stream...", log("Updating streaming output..."), progress_pct
                         if merge_videos_ffmpeg(video_paths, stream_output_path, fps):
-                            yield gallery_images, video_path, stream_output_path, overall_status, f"Scene {scene_num}: Stream updated", log(f"Streaming output updated: {stream_output_path}")
+                            yield gallery_images, video_path, stream_output_path, overall_status, f"Scene {scene_num}: Stream updated", log(f"Streaming output updated: {stream_output_path}"), progress_pct
                         else:
-                            yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Stream failed", log("WARNING: Streaming merge failed")
+                            yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Stream failed", log("WARNING: Streaming merge failed"), progress_pct
 
                     # Extract thumbnail for gallery
                     thumb_path = str(output_dir / f"thumb_{scene_num:02d}.jpg")
                     if extract_frame_ffmpeg(video_path, thumb_path, "first"):
                         gallery_images.append(thumb_path)
-                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Complete", log("Thumbnail extracted")
+                        yield gallery_images, video_path, None, overall_status, f"Scene {scene_num}: Complete", log("Thumbnail extracted"), progress_pct
 
                     # Extract last frame for continuity
                     if use_continuity:
                         last_frame_path = str(output_dir / f"lastframe_{scene_num:02d}.jpg")
                         if extract_frame_ffmpeg(video_path, last_frame_path, "last"):
-                            yield gallery_images, video_path, None, overall_status, scene_status, log("Last frame extracted for continuity")
+                            yield gallery_images, video_path, None, overall_status, scene_status, log("Last frame extracted for continuity"), progress_pct
 
                     scene_success = True
                     break  # Success - exit retry loop
@@ -3388,47 +3428,44 @@ def generate_movie_pipeline(
 
             except Exception as e:
                 if attempt < MAX_SCENE_RETRIES:
-                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Error (will retry)", log(f"ERROR on attempt {attempt + 1}: {e}")
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Error (will retry)", log(f"ERROR on attempt {attempt + 1}: {e}"), progress_pct
                     continue
                 else:
-                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Failed", log(f"FAILED after {MAX_SCENE_RETRIES + 1} attempts: {e}")
+                    yield gallery_images, None, None, overall_status, f"Scene {scene_num}: Failed", log(f"FAILED after {MAX_SCENE_RETRIES + 1} attempts: {e}"), progress_pct
                     failed_scenes.append(scene_num)
                     # Continue to next scene but track failure
 
     # Check for cancellation before merge (thread-safe)
     if _movie_generation_cancel_event.is_set():
-        yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled before merge")
+        yield gallery_images, None, None, "Cancelled", "Cancelled by user", log("Generation cancelled before merge"), 100
         return
 
     # Report failed scenes if any
     if failed_scenes:
-        yield gallery_images, None, None, "Merging videos...", "Some scenes failed", log(f"\nWARNING: Scenes {failed_scenes} failed after all retries")
+        yield gallery_images, None, None, "Merging videos...", "Some scenes failed", log(f"\nWARNING: Scenes {failed_scenes} failed after all retries"), 90
 
     # Merge all videos
     if len(video_paths) > 0:
         final_path = stream_output_path if stream_output_path and os.path.exists(stream_output_path) else None
         if final_path:
-            progress(1.0, desc="Complete!")
             success_msg = f"Complete! {len(video_paths)}/{total_scenes} scenes merged"
             if failed_scenes:
                 success_msg += f" ({len(failed_scenes)} failed)"
-            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}")
+            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}"), 100
             return
 
-        yield gallery_images, None, None, "Merging videos...", "Creating final movie...", log(f"\n=== Merging {len(video_paths)} videos ===")
-        progress(0.9, desc="Merging videos...")
+        yield gallery_images, None, None, "Merging videos...", "Creating final movie...", log(f"\n=== Merging {len(video_paths)} videos ==="), 90
 
         final_path = str(OUTPUT_DIR / f"movie_{uuid.uuid4().hex[:8]}.mp4")
         if merge_videos_ffmpeg(video_paths, final_path, fps):
-            progress(1.0, desc="Complete!")
             success_msg = f"Complete! {len(video_paths)}/{total_scenes} scenes merged"
             if failed_scenes:
                 success_msg += f" ({len(failed_scenes)} failed)"
-            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}")
+            yield gallery_images, None, final_path, success_msg, "Done!", log(f"Final movie: {final_path}"), 100
         else:
-            yield gallery_images, None, None, "Merge failed", "FFmpeg error", log("ERROR: Could not merge videos")
+            yield gallery_images, None, None, "Merge failed", "FFmpeg error", log("ERROR: Could not merge videos"), 100
     else:
-        yield gallery_images, None, None, "No videos generated", "", log("ERROR: No videos were successfully generated")
+        yield gallery_images, None, None, "No videos generated", "", log("ERROR: No videos were successfully generated"), 0
 
 
 def generate_video_ui(
@@ -3450,9 +3487,16 @@ def generate_video_ui(
     save_frames: bool,
     negative_prompt: str,
     tiling_mode: str = "auto",
+    pipeline_type: str = "distilled",
+    cfg_scale: float = 4.0,
+    num_inference_steps: int = 40,
+    stream_output: bool = False,
     progress=gr.Progress()
 ):
     """Generate video with audio using mlx-video.
+
+    Args:
+        stream_output: Enable streaming preview (dev pipeline + tiling only)
     """
 
     log_messages = []
@@ -3463,16 +3507,19 @@ def generate_video_ui(
 
     if not prompt.strip():
         gr.Warning("Please enter a prompt!")
-        return None, None, "Error: No prompt provided", ""
+        return None, None, None, "Error: No prompt provided", ""
 
-    yield None, None, "Starting...", log("Importing mlx-video...")
+    yield None, None, None, "Starting...", log("Importing mlx-video...")
     progress(0.05, desc="Importing mlx-video...")
 
     try:
-        from mlx_video.generate_av import generate_video_with_audio
+        if pipeline_type == "dev":
+            from mlx_video.generate_dev import generate_video_dev
+        else:
+            from mlx_video.generate_av import generate_video_with_audio
     except ImportError as e:
         error_msg = f"Error: mlx-video not installed. Run: uv sync\n{e}"
-        yield None, None, error_msg, log(error_msg)
+        yield None, None, None, error_msg, log(error_msg)
         return
 
     # Create output paths
@@ -3483,7 +3530,7 @@ def generate_video_ui(
     output_path = str(OUTPUT_DIR / f"video_{video_id}.mp4")
     audio_path = str(temp_dir / f"video_{video_id}.wav")
 
-    yield None, None, "Loading models...", log("Loading models...")
+    yield None, None, None, "Loading models...", log("Loading models...")
     progress(0.1, desc="Loading models...")
 
     try:
@@ -3527,7 +3574,7 @@ def generate_video_ui(
             # Validate image file exists
             if not os.path.exists(input_image):
                 error_msg = f"Image file not found: {input_image}"
-                yield None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
+                yield None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
                 return
 
             # Validate file extension
@@ -3535,38 +3582,159 @@ def generate_video_ui(
             ext = os.path.splitext(input_image)[1].lower()
             if ext not in valid_extensions:
                 error_msg = f"Invalid image format: {ext}. Use PNG, JPG, JPEG, WebP, BMP, or GIF"
-                yield None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
+                yield None, None, None, f"Error: {error_msg}", log(f"ERROR: {error_msg}")
                 return
 
             kwargs["image"] = input_image
             kwargs["image_strength"] = image_strength
             kwargs["image_frame_idx"] = int(image_frame_idx)
-            yield None, None, "Processing input image...", log(f"Using image: {input_image}")
+            yield None, None, None, "Processing input image...", log(f"Using image: {input_image}")
 
-        yield None, None, "Generating video latents...", log("Generating video latents (Stage 1)...")
+        yield None, None, None, "Generating video latents...", log("Generating video latents (Stage 1)...")
         progress(0.2, desc="Generating video latents...")
 
-        # Warn about unsupported parameters
-        if negative_prompt and negative_prompt.strip():
-            gr.Warning("Negative prompt is not yet supported by mlx-video and will be ignored")
-            log("Note: negative_prompt ignored (not supported by mlx-video)")
+        if pipeline_type == "dev":
+            # Dev pipeline with CFG support
+            log(f"Using Dev pipeline: CFG={cfg_scale}, steps={num_inference_steps}")
+            _patch_ltx_attention_mask_alignment()
 
-        def run_generation_with_fallback(active_kwargs):
-            try:
-                generate_video_with_audio(**active_kwargs)
-                return
-            except Exception as e:
-                if active_kwargs.get("enhance_prompt"):
-                    log(f"[WARN] Prompt enhancement failed: {e}. Retrying without enhancement.")
-                    fallback_kwargs = dict(active_kwargs)
-                    fallback_kwargs["enhance_prompt"] = False
-                    generate_video_with_audio(**fallback_kwargs)
+            # Check if streaming is enabled and possible
+            can_stream = stream_output and tiling_mode != "none"
+
+            if can_stream:
+                # Streaming mode: use threading to collect frames
+                import queue
+                frame_queue = queue.Queue()
+                generation_done = threading.Event()
+                generation_error = [None]  # Use list to allow modification in callback
+                latest_frame = [None]  # Latest frame for preview
+
+                def on_frame_ready(frames_np, start_idx):
+                    """Callback to receive decoded frames."""
+                    # frames_np: (F, H, W, C), uint8
+                    for i in range(frames_np.shape[0]):
+                        frame = frames_np[i]
+                        frame_queue.put((start_idx + i, frame))
+                        latest_frame[0] = frame
+
+                def log_callback(msg):
+                    log(msg)
+
+                def run_generation():
+                    try:
+                        generate_video_dev_streaming(
+                            prompt=effective_prompt,
+                            negative_prompt=negative_prompt if negative_prompt and negative_prompt.strip() else "worst quality, inconsistent motion, blurry, jittery, distorted",
+                            width=int(width),
+                            height=int(height),
+                            num_frames=int(num_frames),
+                            num_inference_steps=int(num_inference_steps),
+                            cfg_scale=float(cfg_scale),
+                            seed=int(seed),
+                            fps=int(fps),
+                            output_path=output_path,
+                            audio_path=audio_path,
+                            tiling_mode=tiling_mode,
+                            enhance_prompt=use_builtin_enhancer,
+                            input_image=input_image,
+                            image_strength=image_strength,
+                            image_frame_idx=int(image_frame_idx) if input_image else 0,
+                            on_frame_ready=on_frame_ready,
+                            log_callback=log_callback,
+                        )
+                    except Exception as e:
+                        generation_error[0] = e
+                    finally:
+                        generation_done.set()
+
+                # Start generation in background thread
+                gen_thread = threading.Thread(target=run_generation, daemon=True)
+                gen_thread.start()
+
+                # Yield frames as they become available
+                frames_received = 0
+                while not generation_done.is_set() or not frame_queue.empty():
+                    try:
+                        frame_idx, frame = frame_queue.get(timeout=0.5)
+                        frames_received += 1
+                        progress(0.2 + 0.7 * (frames_received / int(num_frames)), desc=f"Decoding frame {frame_idx + 1}...")
+                        yield None, None, latest_frame[0], f"Streaming: frame {frame_idx + 1}...", log(f"Frame {frame_idx + 1} received")
+                    except queue.Empty:
+                        # No frame available, yield current state
+                        if latest_frame[0] is not None:
+                            yield None, None, latest_frame[0], f"Generating... ({frames_received} frames)", "\n".join(log_messages)
+                        continue
+
+                # Wait for generation to complete
+                gen_thread.join(timeout=60)
+
+                if generation_error[0]:
+                    raise generation_error[0]
+
+            else:
+                # Non-streaming mode: use original generate_video_dev
+                from mlx_video.generate_dev import generate_video_dev
+
+                dev_kwargs = {
+                    "model_repo": "mlx-community/LTX-2-dev-bf16",
+                    "text_encoder_repo": None,
+                    "prompt": effective_prompt,
+                    "negative_prompt": negative_prompt if negative_prompt and negative_prompt.strip() else "worst quality, inconsistent motion, blurry, jittery, distorted",
+                    "height": int(height),
+                    "width": int(width),
+                    "num_frames": int(num_frames),
+                    "num_inference_steps": int(num_inference_steps),
+                    "cfg_scale": float(cfg_scale),
+                    "seed": int(seed),
+                    "fps": int(fps),
+                    "output_path": output_path,
+                    "output_audio_path": audio_path,
+                    "verbose": True,
+                    "enhance_prompt": use_builtin_enhancer,
+                    "tiling": tiling_mode,
+                    "audio": True,
+                }
+
+                # Add image for I2V if provided
+                if input_image:
+                    dev_kwargs["image"] = input_image
+                    dev_kwargs["image_strength"] = image_strength
+                    dev_kwargs["image_frame_idx"] = int(image_frame_idx)
+
+                try:
+                    generate_video_dev(**dev_kwargs)
+                except Exception as e:
+                    if dev_kwargs.get("enhance_prompt"):
+                        log(f"[WARN] Prompt enhancement failed: {e}. Retrying without enhancement.")
+                        dev_kwargs["enhance_prompt"] = False
+                        generate_video_dev(**dev_kwargs)
+                    else:
+                        raise
+        else:
+            # Distilled pipeline (original behavior)
+            from mlx_video.generate_av import generate_video_with_audio
+
+            # Warn about unsupported parameters
+            if negative_prompt and negative_prompt.strip():
+                gr.Warning("Negative prompt is only supported by the dev pipeline")
+                log("Note: negative_prompt ignored (use dev pipeline for CFG support)")
+
+            def run_generation_with_fallback(active_kwargs):
+                try:
+                    generate_video_with_audio(**active_kwargs)
                     return
-                raise
+                except Exception as e:
+                    if active_kwargs.get("enhance_prompt"):
+                        log(f"[WARN] Prompt enhancement failed: {e}. Retrying without enhancement.")
+                        fallback_kwargs = dict(active_kwargs)
+                        fallback_kwargs["enhance_prompt"] = False
+                        generate_video_with_audio(**fallback_kwargs)
+                        return
+                    raise
 
-        run_generation_with_fallback(kwargs)
+            run_generation_with_fallback(kwargs)
 
-        yield None, None, "Encoding final video...", log("Encoding final video with audio...")
+        yield None, None, None, "Encoding final video...", log("Encoding final video with audio...")
         progress(0.9, desc="Encoding final video...")
 
         # Check if files exist
@@ -3577,7 +3745,7 @@ def generate_video_ui(
         frames_saved = 0
         frames_dir = None
         if save_frames and video_out:
-            yield None, None, "Saving individual frames...", log("Saving individual frames as PNG...")
+            yield None, None, None, "Saving individual frames...", log("Saving individual frames as PNG...")
             progress(0.92, desc="Saving frames...")
             try:
                 from PIL import Image
@@ -3615,10 +3783,10 @@ def generate_video_ui(
             log(f"Video opgeslagen op: {video_out}")
             gr.Warning("FFmpeg niet geïnstalleerd! Run: brew install ffmpeg")
             # Return path as string in status instead of video component
-            yield None, audio_out, f"{status}\n\n📁 Video: {video_out}", "\n".join(log_messages)
+            yield None, audio_out, None, f"{status}\n\n📁 Video: {video_out}", "\n".join(log_messages)
             return
 
-        yield video_out, audio_out, status, "\n".join(log_messages)
+        yield video_out, audio_out, None, status, "\n".join(log_messages)
 
     except Exception as e:
         error_msg = str(e)
@@ -3629,7 +3797,516 @@ def generate_video_ui(
             error_msg = f"Generation failed: {error_msg}"
         gr.Warning(error_msg)
         log(f"ERROR: {error_msg}")
-        yield None, None, error_msg, "\n".join(log_messages)
+        yield None, None, None, error_msg, "\n".join(log_messages)
+
+
+def _patch_ltx_attention_mask_alignment() -> None:
+    import mlx.core as mx
+    from mlx_video.models.ltx import attention as ltx_attention
+
+    def _align_attention_mask(mask, q_len, k_len, batch_size, heads):
+        if mask is None:
+            return None
+
+        if mask.ndim == 2:
+            mask = mx.expand_dims(mask, axis=0)
+            mask = mx.expand_dims(mask, axis=1)
+        elif mask.ndim == 3:
+            mask = mx.expand_dims(mask, axis=1)
+        elif mask.ndim != 4:
+            return None
+
+        if mask.shape[0] not in (1, batch_size):
+            if mask.shape[0] > batch_size:
+                mask = mask[:batch_size]
+            else:
+                return None
+
+        if mask.shape[1] not in (1, heads):
+            if mask.shape[1] > heads:
+                mask = mask[:, :heads]
+            else:
+                return None
+
+        if mask.shape[-2] not in (1, q_len):
+            if mask.shape[-2] > q_len:
+                mask = mask[..., :q_len, :]
+            else:
+                return None
+
+        if mask.shape[-1] != k_len:
+            if mask.shape[-1] == q_len:
+                if k_len > mask.shape[-1]:
+                    pad = k_len - mask.shape[-1]
+                    pad_values = mx.zeros(
+                        (mask.shape[0], mask.shape[1], mask.shape[-2], pad),
+                        dtype=mask.dtype,
+                    )
+                    mask = mx.concatenate([mask, pad_values], axis=-1)
+                else:
+                    mask = mask[..., :k_len]
+            elif mask.shape[-1] > k_len:
+                mask = mask[..., :k_len]
+            else:
+                return None
+
+        return mask
+
+    if not getattr(ltx_attention, "_mlx_video_ui_mask_patch", False):
+        ltx_attention._mlx_video_ui_original_scaled_dot_product_attention = (
+            ltx_attention.scaled_dot_product_attention
+        )
+        original = ltx_attention._mlx_video_ui_original_scaled_dot_product_attention
+
+        def scaled_dot_product_attention_patched(q, k, v, heads, mask=None):
+            _, q_seq_len, _ = q.shape
+            _, kv_seq_len, _ = k.shape
+            mask = _align_attention_mask(mask, q_seq_len, kv_seq_len, q.shape[0], heads)
+            return original(q, k, v, heads, mask=mask)
+
+        ltx_attention.scaled_dot_product_attention = scaled_dot_product_attention_patched
+        ltx_attention._mlx_video_ui_mask_patch = True
+
+    if not getattr(mx.fast, "_mlx_video_ui_mask_patch", False):
+        mx.fast._mlx_video_ui_original_scaled_dot_product_attention = mx.fast.scaled_dot_product_attention
+        fast_original = mx.fast._mlx_video_ui_original_scaled_dot_product_attention
+
+        def fast_scaled_dot_product_attention_patched(q, k, v, *args, **kwargs):
+            scale = kwargs.get("scale")
+            mask = kwargs.get("mask")
+            args_list = list(args)
+
+            if scale is None and len(args_list) >= 1:
+                scale = args_list[0]
+            if mask is None and len(args_list) >= 2:
+                mask = args_list[1]
+
+            q_len = q.shape[-2]
+            k_len = k.shape[-2]
+            mask = _align_attention_mask(mask, q_len, k_len, q.shape[0], q.shape[1])
+
+            if "mask" in kwargs:
+                kwargs["mask"] = mask
+            elif len(args_list) >= 2:
+                args_list[1] = mask
+            else:
+                kwargs["mask"] = mask
+
+            if "scale" not in kwargs and len(args_list) < 1 and scale is not None:
+                kwargs["scale"] = scale
+
+            return fast_original(q, k, v, *args_list, **kwargs)
+
+        mx.fast.scaled_dot_product_attention = fast_scaled_dot_product_attention_patched
+        mx.fast._mlx_video_ui_mask_patch = True
+
+
+def generate_video_dev_streaming(
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    num_frames: int,
+    num_inference_steps: int,
+    cfg_scale: float,
+    seed: int,
+    fps: int,
+    output_path: str,
+    audio_path: str,
+    tiling_mode: str,
+    enhance_prompt: bool,
+    input_image: str | None = None,
+    image_strength: float = 1.0,
+    image_frame_idx: int = 0,
+    on_frame_ready: callable = None,
+    log_callback: callable = None,
+):
+    """Generate video with streaming frame callback.
+
+    This is a wrapper around generate_video_dev internals that exposes
+    the on_frames_ready callback for real-time frame preview.
+
+    Args:
+        prompt: Text prompt for video generation
+        negative_prompt: Negative prompt for CFG
+        width: Video width
+        height: Video height
+        num_frames: Number of frames
+        num_inference_steps: Denoising steps
+        cfg_scale: CFG scale
+        seed: Random seed
+        fps: Frames per second
+        output_path: Path to save output video
+        audio_path: Path to save audio
+        tiling_mode: Tiling mode for VAE
+        enhance_prompt: Whether to enhance prompt
+        input_image: Optional input image for I2V
+        image_strength: Image conditioning strength
+        image_frame_idx: Frame index for image conditioning
+        on_frame_ready: Callback for streaming frames (frames_np, start_idx)
+        log_callback: Callback for log messages
+    """
+    import mlx.core as mx
+    import numpy as np
+    import time
+    from pathlib import Path
+
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+        print(msg)
+
+    _patch_ltx_attention_mask_alignment()
+
+    # Import from mlx_video
+    from mlx_video.generate_dev import (
+        ltx2_scheduler,
+        create_position_grid,
+        create_audio_position_grid,
+        denoise_av_with_cfg,
+        compute_audio_frames,
+        load_audio_decoder,
+        load_vocoder,
+        save_audio,
+        mux_video_audio,
+        DEFAULT_NEGATIVE_PROMPT,
+        AUDIO_LATENT_CHANNELS,
+        AUDIO_MEL_BINS,
+        AUDIO_SAMPLE_RATE,
+    )
+    from mlx_video.models.ltx.ltx import LTXModel
+    from mlx_video.models.ltx.config import LTXModelConfig, LTXModelType, LTXRopeType
+    from mlx_video.models.ltx.text_encoder import LTX2TextEncoder
+    from mlx_video.models.ltx.video_vae.decoder import load_vae_decoder
+    from mlx_video.models.ltx.video_vae.encoder import load_vae_encoder
+    from mlx_video.models.ltx.video_vae.tiling import TilingConfig
+    from mlx_video.conditioning import VideoConditionByLatentIndex, apply_conditioning
+    from mlx_video.conditioning.latent import LatentState
+    from mlx_video.convert import sanitize_transformer_weights
+    from mlx_video.utils import get_model_path, load_image, prepare_image_for_encoding
+
+    # Fixed LTX-2 scheduler - avoids division by zero in sigma calculations
+    def ltx2_scheduler_fixed(
+        steps: int,
+        num_tokens: int = None,
+        max_shift: float = 2.05,
+        base_shift: float = 0.95,
+        stretch: bool = True,
+        terminal: float = 0.1,
+    ) -> mx.array:
+        """Fixed LTX-2 scheduler - avoids division by zero."""
+        import math
+        BASE_SHIFT_ANCHOR = 1024
+        MAX_SHIFT_ANCHOR = 4096
+
+        tokens = num_tokens if num_tokens is not None else MAX_SHIFT_ANCHOR
+        sigmas = np.linspace(1.0, 0.0, steps + 1)
+
+        x1 = BASE_SHIFT_ANCHOR
+        x2 = MAX_SHIFT_ANCHOR
+        mm = (max_shift - base_shift) / (x2 - x1)
+        b = base_shift - mm * x1
+        sigma_shift = tokens * mm + b
+
+        # Fixed: avoid division by zero
+        power = 1
+        exp_shift = math.exp(sigma_shift)
+        non_zero_mask = sigmas > 0
+        sigmas_safe = np.where(non_zero_mask, sigmas, 1.0)
+        transformed = exp_shift / (exp_shift + (1.0 / sigmas_safe - 1.0) ** power)
+        sigmas = np.where(non_zero_mask, transformed, 0.0)
+
+        # Stretch to terminal value
+        if stretch:
+            non_zero_mask = sigmas > 0
+            non_zero_sigmas = sigmas[non_zero_mask]
+            if len(non_zero_sigmas) > 0:
+                one_minus_z = 1.0 - non_zero_sigmas
+                denominator = 1.0 - terminal
+                if abs(denominator) > 1e-8 and abs(one_minus_z[-1]) > 1e-8:
+                    scale_factor = one_minus_z[-1] / denominator
+                    stretched = 1.0 - (one_minus_z / scale_factor)
+                    sigmas[non_zero_mask] = stretched
+
+        return mx.array(sigmas, dtype=mx.float32)
+
+    start_time = time.time()
+
+    # Validate dimensions
+    if height % 32 != 0:
+        raise ValueError(f"Height must be divisible by 32, got {height}")
+    if width % 32 != 0:
+        raise ValueError(f"Width must be divisible by 32, got {width}")
+
+    if num_frames % 8 != 1:
+        adjusted_num_frames = round((num_frames - 1) / 8) * 8 + 1
+        log(f"Adjusted frames to {adjusted_num_frames}")
+        num_frames = adjusted_num_frames
+
+    # Calculate audio frames
+    audio_frames = compute_audio_frames(num_frames, fps)
+    is_i2v = input_image is not None
+
+    # Get model path
+    model_repo = "mlx-community/LTX-2-dev-bf16"
+    model_path = get_model_path(model_repo)
+
+    # Calculate latent dimensions
+    latent_h, latent_w = height // 32, width // 32
+    latent_frames = 1 + (num_frames - 1) // 8
+
+    mx.random.seed(seed)
+
+    # Load text encoder
+    log("Loading text encoder...")
+    text_encoder = LTX2TextEncoder()
+    text_encoder.load(model_path=model_path, text_encoder_path=model_path)
+    mx.eval(text_encoder.parameters())
+
+    # Optionally enhance prompt
+    if enhance_prompt:
+        log("Enhancing prompt...")
+        prompt = text_encoder.enhance_t2v(prompt, max_tokens=512, temperature=0.7, seed=seed, verbose=False)
+        log(f"Enhanced: {prompt[:100]}...")
+
+    # Encode prompts
+    video_embeddings_pos, audio_embeddings_pos = text_encoder(prompt, return_audio_embeddings=True)
+    effective_negative = negative_prompt if negative_prompt and negative_prompt.strip() else DEFAULT_NEGATIVE_PROMPT
+    video_embeddings_neg, audio_embeddings_neg = text_encoder(effective_negative, return_audio_embeddings=True)
+    model_dtype = video_embeddings_pos.dtype
+    mx.eval(video_embeddings_pos, video_embeddings_neg, audio_embeddings_pos, audio_embeddings_neg)
+
+    del text_encoder
+    mx.clear_cache()
+
+    # Load transformer
+    log("Loading transformer...")
+    raw_weights = mx.load(str(model_path / 'ltx-2-19b-dev.safetensors'))
+    sanitized = sanitize_transformer_weights(raw_weights)
+    sanitized = {k: v.astype(mx.bfloat16) if v.dtype == mx.float32 else v for k, v in sanitized.items()}
+
+    config = LTXModelConfig(
+        model_type=LTXModelType.AudioVideo,
+        num_attention_heads=32,
+        attention_head_dim=128,
+        in_channels=128,
+        out_channels=128,
+        num_layers=48,
+        cross_attention_dim=4096,
+        caption_channels=3840,
+        audio_num_attention_heads=32,
+        audio_attention_head_dim=64,
+        audio_in_channels=AUDIO_LATENT_CHANNELS * AUDIO_MEL_BINS,
+        audio_out_channels=AUDIO_LATENT_CHANNELS * AUDIO_MEL_BINS,
+        audio_cross_attention_dim=2048,
+        rope_type=LTXRopeType.SPLIT,
+        double_precision_rope=True,
+        positional_embedding_theta=10000.0,
+        positional_embedding_max_pos=[20, 2048, 2048],
+        audio_positional_embedding_max_pos=[20],
+        use_middle_indices_grid=True,
+        timestep_scale_multiplier=1000,
+    )
+
+    transformer = LTXModel(config)
+    transformer.load_weights(list(sanitized.items()), strict=False)
+    mx.eval(transformer.parameters())
+
+    # Load VAE encoder for I2V
+    image_latent = None
+    if is_i2v:
+        log("Loading VAE encoder...")
+        vae_encoder = load_vae_encoder(str(model_path / 'ltx-2-19b-dev.safetensors'))
+        mx.eval(vae_encoder.parameters())
+
+        input_img = load_image(input_image, height=height, width=width, dtype=model_dtype)
+        image_tensor = prepare_image_for_encoding(input_img, height, width, dtype=model_dtype)
+        image_latent = vae_encoder(image_tensor)
+        mx.eval(image_latent)
+
+        del vae_encoder
+        mx.clear_cache()
+
+    # Generate sigma schedule
+    num_tokens = latent_frames * latent_h * latent_w
+    sigmas = ltx2_scheduler_fixed(steps=num_inference_steps, num_tokens=num_tokens)
+    mx.eval(sigmas)
+
+    # Create position grids
+    log("Generating video latents...")
+    mx.random.seed(seed)
+
+    video_positions = create_position_grid(1, latent_frames, latent_h, latent_w)
+    audio_positions = create_audio_position_grid(1, audio_frames)
+    mx.eval(video_positions, audio_positions)
+
+    # Initialize latents
+    video_state = None
+    video_latent_shape = (1, 128, latent_frames, latent_h, latent_w)
+    if is_i2v and image_latent is not None:
+        video_state = LatentState(
+            latent=mx.zeros(video_latent_shape, dtype=model_dtype),
+            clean_latent=mx.zeros(video_latent_shape, dtype=model_dtype),
+            denoise_mask=mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype),
+        )
+        conditioning = VideoConditionByLatentIndex(
+            latent=image_latent,
+            frame_idx=image_frame_idx,
+            strength=image_strength,
+        )
+        video_state = apply_conditioning(video_state, [conditioning])
+
+        noise = mx.random.normal(video_latent_shape, dtype=model_dtype)
+        noise_scale = sigmas[0]
+        scaled_mask = video_state.denoise_mask * noise_scale
+
+        video_state = LatentState(
+            latent=noise * scaled_mask + video_state.latent * (mx.array(1.0, dtype=model_dtype) - scaled_mask),
+            clean_latent=video_state.clean_latent,
+            denoise_mask=video_state.denoise_mask,
+        )
+        video_latents = video_state.latent
+        mx.eval(video_latents)
+    else:
+        video_latents = mx.random.normal(video_latent_shape, dtype=model_dtype)
+        mx.eval(video_latents)
+
+    # Initialize audio latents
+    audio_latents = mx.random.normal((1, AUDIO_LATENT_CHANNELS, audio_frames, AUDIO_MEL_BINS), dtype=model_dtype)
+    mx.eval(audio_latents)
+
+    # Denoise with CFG
+    video_latents, audio_latents = denoise_av_with_cfg(
+        video_latents, audio_latents,
+        video_positions, audio_positions,
+        video_embeddings_pos, video_embeddings_neg,
+        audio_embeddings_pos, audio_embeddings_neg,
+        transformer, sigmas, cfg_scale=cfg_scale, verbose=True, video_state=video_state
+    )
+
+    del transformer
+    mx.clear_cache()
+
+    # Decode to video with streaming callback
+    log("Decoding video (streaming)...")
+    vae_decoder = load_vae_decoder(
+        str(model_path / 'ltx-2-19b-dev.safetensors'),
+        timestep_conditioning=None
+    )
+    mx.eval(vae_decoder.parameters())
+
+    # Select tiling configuration
+    if tiling_mode == "none":
+        tiling_config = None
+    elif tiling_mode == "auto":
+        tiling_config = TilingConfig.auto(height, width, num_frames)
+    elif tiling_mode == "default":
+        tiling_config = TilingConfig.default()
+    elif tiling_mode == "aggressive":
+        tiling_config = TilingConfig.aggressive()
+    elif tiling_mode == "conservative":
+        tiling_config = TilingConfig.conservative()
+    elif tiling_mode == "spatial":
+        tiling_config = TilingConfig.spatial_only()
+    elif tiling_mode == "temporal":
+        tiling_config = TilingConfig.temporal_only()
+    else:
+        tiling_config = TilingConfig.auto(height, width, num_frames)
+
+    # Create frame callback wrapper
+    def frame_callback(frames_mx: mx.array, start_idx: int):
+        if on_frame_ready is not None:
+            # Convert from MLX to numpy
+            frames_mx = frames_mx.astype(mx.float32)
+            frames_np = np.array(frames_mx)
+            # frames_np shape: (B, C, F, H, W), values [-1, 1]
+            # Convert to (F, H, W, C), values [0, 255] uint8
+            frames_np = frames_np[0]  # Remove batch: (C, F, H, W)
+            frames_np = np.transpose(frames_np, (1, 2, 3, 0))  # (F, H, W, C)
+            frames_np = np.clip((frames_np + 1.0) / 2.0, 0.0, 1.0)  # [0, 1]
+            frames_uint8 = (frames_np * 255).astype(np.uint8)
+            on_frame_ready(frames_uint8, start_idx)
+
+    if tiling_config is not None:
+        video = vae_decoder.decode_tiled(
+            video_latents,
+            tiling_config=tiling_config,
+            tiling_mode=tiling_mode,
+            debug=True,
+            on_frames_ready=frame_callback
+        )
+    else:
+        video = vae_decoder(video_latents)
+    mx.eval(video)
+
+    del vae_decoder
+    mx.clear_cache()
+
+    # Decode audio
+    log("Decoding audio...")
+    audio_decoder = load_audio_decoder(model_path)
+    mx.eval(audio_decoder.parameters())
+
+    mel_spectrogram = audio_decoder(audio_latents)
+    mx.eval(mel_spectrogram)
+
+    del audio_decoder
+    mx.clear_cache()
+
+    vocoder = load_vocoder(model_path)
+    mx.eval(vocoder.parameters())
+
+    audio_waveform = vocoder(mel_spectrogram)
+    mx.eval(audio_waveform)
+
+    del vocoder
+    mx.clear_cache()
+
+    audio_waveform = audio_waveform.astype(mx.float32)
+    audio_np = np.array(audio_waveform)
+    if audio_np.ndim == 3:
+        audio_np = audio_np[0]
+
+    # Convert video to uint8 frames
+    video = mx.squeeze(video, axis=0)
+    video = mx.transpose(video, (1, 2, 3, 0))
+    video = mx.clip((video + 1.0) / 2.0, 0.0, 1.0)
+    video = (video * 255).astype(mx.uint8)
+    video_np = np.array(video)
+
+    # Save outputs
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    audio_output = Path(audio_path)
+    save_audio(audio_np, audio_output)
+    log(f"Saved audio to {audio_output}")
+
+    # Save video to temp, then mux
+    temp_video_path = output_path.parent / f"{output_path.stem}_temp.mp4"
+
+    try:
+        import cv2
+        h, w = video_np.shape[1], video_np.shape[2]
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        out = cv2.VideoWriter(str(temp_video_path), fourcc, fps, (w, h))
+        for frame in video_np:
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        out.release()
+
+        log("Muxing video and audio...")
+        if mux_video_audio(temp_video_path, audio_output, output_path):
+            log(f"Saved video with audio to {output_path}")
+            temp_video_path.unlink(missing_ok=True)
+        else:
+            temp_video_path.rename(output_path.parent / f"{output_path.stem}_video.mp4")
+    except Exception as e:
+        log(f"Could not save video: {e}")
+
+    elapsed = time.time() - start_time
+    log(f"Total time: {elapsed:.1f}s")
+
+    return str(output_path), str(audio_output)
 
 
 def create_ui():
@@ -3795,6 +4472,53 @@ def create_ui():
             outputs=[settings.text_cfg, settings.cross_modal_cfg],
         )
 
+        # Pipeline settings visibility toggle
+        def toggle_dev_settings(pipeline):
+            is_dev = pipeline == "dev"
+            return (
+                gr.update(visible=is_dev),  # cfg_scale
+                gr.update(visible=is_dev),  # num_inference_steps
+                gr.update(visible=is_dev),  # negative_prompt
+            )
+
+        generation.pipeline_type.change(
+            fn=toggle_dev_settings,
+            inputs=[generation.pipeline_type],
+            outputs=[
+                generation.cfg_scale,
+                generation.num_inference_steps,
+                generation.negative_prompt,
+            ],
+        )
+
+        # Streaming visibility handlers
+        def update_streaming_visibility(tiling_mode, pipeline_type):
+            """Show streaming option only when tiling is enabled and using dev pipeline."""
+            show = tiling_mode != "none" and pipeline_type == "dev"
+            return gr.update(visible=show)
+
+        generation.tiling_mode.change(
+            fn=update_streaming_visibility,
+            inputs=[generation.tiling_mode, generation.pipeline_type],
+            outputs=[generation.stream_output],
+        )
+
+        generation.pipeline_type.change(
+            fn=update_streaming_visibility,
+            inputs=[generation.tiling_mode, generation.pipeline_type],
+            outputs=[generation.stream_output],
+        )
+
+        def update_streaming_preview_visibility(stream_output):
+            """Show streaming preview when stream output is enabled."""
+            return gr.update(visible=stream_output)
+
+        generation.stream_output.change(
+            fn=update_streaming_preview_visibility,
+            inputs=[generation.stream_output],
+            outputs=[generation.streaming_preview],
+        )
+
         # Main generate button
         generation.generate_btn.click(
             fn=generate_video_ui,
@@ -3815,12 +4539,17 @@ def create_ui():
                 settings.temperature,
                 settings.max_tokens,
                 generation.save_frames,
-                settings.negative_prompt,
+                generation.negative_prompt,  # Use generation tab's negative_prompt
                 generation.tiling_mode,
+                generation.pipeline_type,
+                generation.cfg_scale,
+                generation.num_inference_steps,
+                generation.stream_output,
             ],
             outputs=[
                 generation.output_video,
                 generation.output_audio,
+                generation.streaming_preview,
                 generation.status,
                 generation.generation_log,
             ],
@@ -4150,6 +4879,23 @@ def create_ui():
         # Cancel movie generation
         movie.cancel_movie_btn.click(fn=cancel_movie_generation, outputs=[movie.cancel_movie_btn])
 
+        # Movie pipeline settings visibility toggle
+        def toggle_movie_dev_settings(pipeline):
+            is_dev = pipeline == "dev"
+            return (
+                gr.update(visible=is_dev),  # cfg_scale
+                gr.update(visible=is_dev),  # num_inference_steps
+            )
+
+        movie.pipeline_type.change(
+            fn=toggle_movie_dev_settings,
+            inputs=[movie.pipeline_type],
+            outputs=[
+                movie.cfg_scale,
+                movie.num_inference_steps,
+            ],
+        )
+
         # Generate movie
         def on_generate_movie(
             scenes,
@@ -4167,6 +4913,9 @@ def create_ui():
             llm_model,
             temp,
             max_tok,
+            pipeline_type,
+            cfg_scale,
+            num_inference_steps,
         ):
             # CRITICAL: Explicitly sync dataframe to scenes before generation
             # This ensures we use the user's edited descriptions, not stale state
@@ -4176,7 +4925,7 @@ def create_ui():
 
             if not scenes:
                 gr.Warning("Generate scenes first!")
-                yield [], None, None, "Error: No scenes", "", "Generate scenes first before creating the movie."
+                yield [], None, None, "Error: No scenes", "", "Generate scenes first before creating the movie.", 0
                 return
 
             # Run the pipeline generator
@@ -4195,6 +4944,9 @@ def create_ui():
                 int(max_tok),
                 tiling_mode=tiling,
                 stream_output=bool(stream_output),
+                pipeline_type=pipeline_type,
+                cfg_scale=float(cfg_scale),
+                num_inference_steps=int(num_inference_steps),
             ):
                 yield result
 
@@ -4216,6 +4968,9 @@ def create_ui():
                 settings.llm_model,
                 movie.temperature,
                 movie.max_tokens,
+                movie.pipeline_type,
+                movie.cfg_scale,
+                movie.num_inference_steps,
             ],
             outputs=[
                 movie.scene_preview_gallery,
@@ -4224,6 +4979,7 @@ def create_ui():
                 movie.overall_progress_md,
                 movie.scene_progress_md,
                 movie.generation_log,
+                movie.progress_bar,
             ],
         )
 

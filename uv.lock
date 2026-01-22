@@ -968,8 +968,7 @@ wheels = [
 
 [[package]]
 name = "mlx-video"
-version = "0.0.1"
-source = { git = "https://github.com/Blaizzy/mlx-video.git?rev=pc%2Fadd-streaming#b1bf9e2dc00419a06702c0b730c6ff522e82ad77" }
+source = { directory = "../../mlx-video" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "mlx" },
@@ -977,10 +976,27 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pillow" },
+    { name = "rich" },
     { name = "safetensors" },
     { name = "tqdm" },
     { name = "transformers", extra = ["tokenizers"] },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub" },
+    { name = "mlx", specifier = ">=0.22.0" },
+    { name = "mlx-vlm" },
+    { name = "numpy" },
+    { name = "opencv-python", specifier = ">=4.12.0.88" },
+    { name = "pillow", specifier = ">=10.3.0" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "rich", specifier = ">=14.2.0" },
+    { name = "safetensors" },
+    { name = "tqdm" },
+    { name = "transformers", extras = ["tokenizers"] },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "mlx-video-ui"
@@ -995,7 +1011,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "gradio", specifier = ">=4.0.0" },
-    { name = "mlx-video", git = "https://github.com/Blaizzy/mlx-video.git?rev=pc%2Fadd-streaming" },
+    { name = "mlx-video", directory = "../../mlx-video" },
     { name = "requests" },
 ]
 

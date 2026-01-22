@@ -6,17 +6,17 @@ import gradio as gr
 
 
 PROMPT_TIPS_MARKDOWN = """
-**Gebaseerd op het LTX-2 paper's captioning systeem:**
+**Based on the LTX-2 paper's captioning system:**
 
-1. **Begin met subject**: "A woman with long dark hair...", "A vintage red car..."
-2. **Voeg actie toe**: "...walks through a sunlit garden...", "...drives down a winding road..."
-3. **Camera beweging**: "...camera slowly tracking alongside...", "...dolly forward..."
-4. **Belichting**: "...soft golden hour lighting...", "...dramatic shadows..."
+1. **Start with subject**: "A woman with long dark hair...", "A vintage red car..."
+2. **Add action**: "...walks through a sunlit garden...", "...drives down a winding road..."
+3. **Camera movement**: "...camera slowly tracking alongside...", "...dolly forward..."
+4. **Lighting**: "...soft golden hour lighting...", "...dramatic shadows..."
 5. **Audio cues**: "...birds singing, footsteps on gravel...", "...engine rumbling, wind noise..."
-6. **Wees specifiek**: Niet "ambient sounds", maar "distant traffic, wind through trees"
-7. **Spraak**: Vermeld taal en accent: "speaks softly in British English"
+6. **Be specific**: Not "ambient sounds", but "distant traffic, wind through trees"
+7. **Speech**: Mention language and accent: "speaks softly in British English"
 
-**Voorbeeld prompt:**
+**Example prompt:**
 > A young woman with curly auburn hair walks through a misty forest, camera tracking alongside, golden hour lighting filtering through the trees. Audio: leaves crunching underfoot, distant bird calls, soft wind through branches, she hums quietly in French.
 """
 
@@ -52,6 +52,11 @@ class GenerationTabComponents:
     save_frames: gr.Checkbox
     tiling_mode: gr.Dropdown
     stream_output: gr.Checkbox
+    # Pipeline settings (Dev model)
+    pipeline_type: gr.Dropdown
+    cfg_scale: gr.Slider
+    num_inference_steps: gr.Slider
+    negative_prompt: gr.Textbox
     # I2V components
     input_image: gr.Image
     image_strength: gr.Slider
@@ -59,6 +64,7 @@ class GenerationTabComponents:
     generate_btn: gr.Button
     output_video: gr.Video
     output_audio: gr.Audio
+    streaming_preview: gr.Image
     status: gr.Textbox
     generation_log: gr.Textbox
 
@@ -256,10 +262,43 @@ def build_generation_tab(
                         info="Memory optimization: aggressive=lowest memory (57% reduction), none=fastest",
                     )
                     stream_output = gr.Checkbox(
-                        label="Stream Output",
+                        label="Stream Output Preview",
                         value=False,
-                        info="Write frames progressively (requires tiling enabled)",
-                        visible=False,  # Hidden: API streaming not supported
+                        info="Show frames as they're decoded (requires tiling + dev pipeline)",
+                        visible=False,  # Visibility controlled by event handlers
+                    )
+
+                with gr.Accordion("Pipeline Settings", open=False):
+                    pipeline_type = gr.Dropdown(
+                        choices=["distilled", "dev"],
+                        value="distilled",
+                        label="Pipeline",
+                        info="'dev' enables CFG + negative prompts (slower, higher quality)",
+                    )
+                    cfg_scale = gr.Slider(
+                        minimum=1.0,
+                        maximum=15.0,
+                        value=4.0,
+                        step=0.5,
+                        label="CFG Scale",
+                        info="Classifier-Free Guidance scale (only for dev pipeline)",
+                        visible=False,
+                    )
+                    num_inference_steps = gr.Slider(
+                        minimum=10,
+                        maximum=100,
+                        value=40,
+                        step=5,
+                        label="Inference Steps",
+                        info="Number of denoising steps (only for dev pipeline)",
+                        visible=False,
+                    )
+                    negative_prompt = gr.Textbox(
+                        label="Negative Prompt",
+                        placeholder="What to avoid in the video...",
+                        lines=2,
+                        info="Only used with dev pipeline",
+                        visible=False,
                     )
 
                 with gr.Accordion("Image to Video (I2V)", open=False):
@@ -291,6 +330,12 @@ def build_generation_tab(
 
             with gr.Column(scale=1, elem_classes="output-section"):
                 output_video = gr.Video(label="Generated Video", autoplay=True, height=350)
+                streaming_preview = gr.Image(
+                    label="Live Preview",
+                    visible=False,
+                    height=200,
+                    show_label=True,
+                )
                 output_audio = gr.Audio(label="Generated Audio", type="filepath")
                 status = gr.Textbox(label="Status", interactive=False, max_lines=2)
                 generation_log = gr.Textbox(
@@ -331,12 +376,17 @@ def build_generation_tab(
         save_frames=save_frames,
         tiling_mode=tiling_mode,
         stream_output=stream_output,
+        pipeline_type=pipeline_type,
+        cfg_scale=cfg_scale,
+        num_inference_steps=num_inference_steps,
+        negative_prompt=negative_prompt,
         input_image=input_image,
         image_strength=image_strength,
         image_frame_idx=image_frame_idx,
         generate_btn=generate_btn,
         output_video=output_video,
         output_audio=output_audio,
+        streaming_preview=streaming_preview,
         status=status,
         generation_log=generation_log,
     )
