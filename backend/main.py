@@ -6,6 +6,12 @@ import os
 
 from routes.generate import router as generate_router
 from routes.upload import router as upload_router
+from routes.train import router as train_router
+from routes.system import router as system_router
+from routes.enhance import router as enhance_router
+from routes.gallery import router as gallery_router
+from routes.checkpoints import router as checkpoints_router
+from routes.loras import router as loras_router
 from services.video_generator import video_generator
 
 
@@ -39,9 +45,15 @@ app.add_middleware(
 # Include routers
 app.include_router(generate_router, prefix="/api", tags=["generation"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
+app.include_router(train_router, prefix="/api", tags=["training"])
+app.include_router(system_router, prefix="/api", tags=["system"])
+app.include_router(enhance_router, prefix="/api", tags=["enhance"])
+app.include_router(gallery_router, prefix="/api", tags=["gallery"])
+app.include_router(checkpoints_router, prefix="/api", tags=["checkpoints"])
+app.include_router(loras_router, prefix="/api", tags=["loras"])
 
-# Mount static files for video output
-app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+# Mount static files for video output (optional direct access)
+app.mount("/outputs", StaticFiles(directory=str(video_generator.output_dir)), name="outputs")
 
 
 @app.get("/")

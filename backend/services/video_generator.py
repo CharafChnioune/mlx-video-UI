@@ -1,16 +1,14 @@
 import asyncio
-import subprocess
 import sys
 import uuid
 import os
 import json
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 import re
 
-from models.schemas import GenerationRequest, JobStatus
+from models.schemas import GenerationRequest, JobStatus, LoraSpec
 
 
 @dataclass
@@ -26,13 +24,30 @@ class Job:
 
 
 class VideoGeneratorService:
-    def __init__(self, output_dir: str = "./outputs", upload_dir: str = "./uploads"):
-        self.output_dir = Path(output_dir)
-        self.upload_dir = Path(upload_dir)
+    def __init__(self, output_dir: Optional[str] = None, upload_dir: Optional[str] = None):
+        repo_root = Path(__file__).resolve().parents[3]
+        ui_root = Path(__file__).resolve().parents[2]
+        default_output = ui_root / "outputs"
+        default_upload = ui_root / "uploads"
+        self.output_dir = Path(output_dir) if output_dir else default_output
+        self.upload_dir = Path(upload_dir) if upload_dir else default_upload
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.jobs: Dict[str, Job] = {}
         self._progress_callbacks: Dict[str, Callable] = {}
+        self._repo_root = repo_root
+        self._python_cmd = self._resolve_python()
+
+    def _resolve_python(self) -> str:
+        """Prefer the mlx-video venv python if available."""
+        mlx_root = self._repo_root / "mlx-video"
+        venv_bin = mlx_root / ".venv" / "bin"
+        for candidate in ("python", "python3"):
+            path = venv_bin / candidate
+            if path.exists():
+                return str(path)
+        # Fallback to current interpreter
+        return sys.executable
 
     def register_progress_callback(self, job_id: str, callback: Callable):
         """Register a callback for progress updates."""
@@ -55,9 +70,9 @@ class VideoGeneratorService:
                 print(f"Error in progress callback: {e}")
 
     def _build_command(self, request: GenerationRequest, output_path: str) -> list:
-        """Build the mlx-video CLI command."""
+        """Build the mlx-video CLI command (mlx_video.generate)."""
         cmd = [
-            sys.executable, "-m", "mlx_video",
+            self._python_cmd, "-m", "mlx_video.generate",
             "--prompt", request.prompt,
             "--height", str(request.height),
             "--width", str(request.width),
@@ -65,7 +80,7 @@ class VideoGeneratorService:
             "--seed", str(request.seed),
             "--fps", str(request.fps),
             "--pipeline", request.pipeline.value,
-            "--output", output_path,
+            "--output-path", output_path,
         ]
 
         if request.negative_prompt:
@@ -73,6 +88,9 @@ class VideoGeneratorService:
 
         if request.model_repo:
             cmd.extend(["--model-repo", request.model_repo])
+
+        if request.text_encoder_repo:
+            cmd.extend(["--text-encoder-repo", request.text_encoder_repo])
 
         if request.checkpoint_path:
             cmd.extend(["--checkpoint-path", request.checkpoint_path])
@@ -83,14 +101,20 @@ class VideoGeneratorService:
             if request.cfg_scale:
                 cmd.extend(["--cfg-scale", str(request.cfg_scale)])
 
-        if request.enhance_prompt:
-            cmd.append("--enhance-prompt")
+        if request.auto_output_name:
+            cmd.append("--auto-output-name")
 
         if request.tiling:
             cmd.extend(["--tiling", request.tiling.value])
 
-        if request.cache_limit_gb:
+        if request.cache_limit_gb is not None:
             cmd.extend(["--cache-limit-gb", str(request.cache_limit_gb)])
+        if request.memory_limit_gb is not None:
+            cmd.extend(["--memory-limit-gb", str(request.memory_limit_gb)])
+        if request.mem_log:
+            cmd.append("--mem-log")
+        if request.clear_cache:
+            cmd.append("--clear-cache")
 
         if request.audio:
             cmd.append("--audio")
@@ -99,16 +123,30 @@ class VideoGeneratorService:
             cmd.append("--stream")
 
         if request.conditioning_image:
-            cmd.extend(["--image", request.conditioning_image])
-            if request.conditioning_frame_idx is not None:
-                cmd.extend(["--frame-idx", str(request.conditioning_frame_idx)])
-            if request.conditioning_strength is not None:
-                cmd.extend(["--strength", str(request.conditioning_strength)])
-
-        if request.video_conditioning:
-            cmd.extend(["--video-conditioning", request.video_conditioning])
+            frame_idx = request.conditioning_frame_idx or 0
+            strength = request.conditioning_strength if request.conditioning_strength is not None else 1.0
+            cmd.extend(["--image", request.conditioning_image, str(frame_idx), str(strength)])
             if request.conditioning_mode:
                 cmd.extend(["--conditioning-mode", request.conditioning_mode.value])
+
+        if request.video_conditioning:
+            frame_idx = request.conditioning_frame_idx or 0
+            strength = request.conditioning_strength if request.conditioning_strength is not None else 1.0
+            cmd.extend(["--video-conditioning", request.video_conditioning, str(frame_idx), str(strength)])
+            if request.conditioning_mode:
+                cmd.extend(["--conditioning-mode", request.conditioning_mode.value])
+
+        # LoRAs
+        for lora in request.loras:
+            if lora.path:
+                cmd.extend(["--lora", lora.path, str(lora.strength)])
+        if request.pipeline.value == "distilled":
+            for lora in request.distilled_loras:
+                if lora.path:
+                    cmd.extend(["--distilled-lora", lora.path, str(lora.strength)])
+
+        if request.extra_args:
+            cmd.extend(request.extra_args)
 
         return cmd
 
@@ -172,14 +210,42 @@ class VideoGeneratorService:
                 "current_step": "Starting generation..."
             })
 
-            cmd = self._build_command(job.request, output_path)
+            # If auto_output_name is enabled, pass directory to let mlx_video.generate choose filename.
+            output_arg = output_path
+            if job.request.auto_output_name:
+                output_arg = str(self.output_dir)
+
+            cmd = self._build_command(job.request, output_arg)
+
+            # If streaming, expose temp video path early for live preview
+            if job.request.stream and not job.request.auto_output_name:
+                temp_path = Path(output_path)
+                if temp_path.suffix == ".mp4":
+                    temp_path = temp_path.with_suffix(".temp.mp4")
+                job.output_path = str(temp_path)
+                await self._notify_progress(job_id, {
+                    "type": "progress",
+                    "job_id": job_id,
+                    "progress": job.progress,
+                    "current_step": "Streaming preview...",
+                    "output_path": job.output_path,
+                })
 
             # Create subprocess
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"}
+                env={
+                    **os.environ,
+                    "PYTHONUNBUFFERED": "1",
+                    "PYTHONPATH": os.pathsep.join(
+                        [
+                            str(self._repo_root / "mlx-video"),
+                            os.environ.get("PYTHONPATH", ""),
+                        ]
+                    ).strip(os.pathsep),
+                },
             )
             job.process = process
 
@@ -201,27 +267,58 @@ class VideoGeneratorService:
                     if step:
                         job.current_step = step
 
+                    if "Streamed video to " in line_str:
+                        try:
+                            path = line_str.split("Streamed video to ", 1)[1].strip()
+                            job.output_path = path
+                        except Exception:
+                            pass
+
                     await self._notify_progress(job_id, {
                         "type": "progress",
                         "job_id": job_id,
                         "progress": job.progress,
-                        "current_step": job.current_step
+                        "current_step": job.current_step,
+                        "output_path": job.output_path,
                     })
 
             # Wait for process to complete
             await process.wait()
 
-            if process.returncode == 0 and Path(output_path).exists():
+            # If auto output name, find newest mp4 in output dir
+            final_output = Path(output_path)
+            if job.request.auto_output_name:
+                mp4s = sorted(self.output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if mp4s:
+                    final_output = mp4s[0]
+
+            if process.returncode == 0 and final_output.exists():
                 job.status = JobStatus.COMPLETED
                 job.progress = 100
-                job.output_path = output_path
+                job.output_path = str(final_output)
                 job.current_step = "Complete"
+                try:
+                    params = job.request.dict() if hasattr(job.request, "dict") else job.request.model_dump()
+                    if "pipeline" in params and hasattr(job.request.pipeline, "value"):
+                        params["pipeline"] = job.request.pipeline.value
+                    if "tiling" in params and hasattr(job.request.tiling, "value"):
+                        params["tiling"] = job.request.tiling.value
+                    meta = {
+                        "prompt": job.request.prompt,
+                        "params": params,
+                        "width": job.request.width,
+                        "height": job.request.height,
+                    }
+                    meta_path = final_output.with_suffix(".json")
+                    meta_path.write_text(json.dumps(meta, indent=2))
+                except Exception:
+                    pass
 
                 await self._notify_progress(job_id, {
                     "type": "complete",
                     "job_id": job_id,
                     "progress": 100,
-                    "output_path": output_path
+                    "output_path": str(final_output)
                 })
             else:
                 job.status = JobStatus.ERROR

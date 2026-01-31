@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,18 @@ export function ConditioningPanel({
   const [uploading, setUploading] = useState(false);
   const [dragOverImage, setDragOverImage] = useState(false);
   const [dragOverVideo, setDragOverVideo] = useState(false);
+
+  useEffect(() => {
+    if (!params.conditioning_image) {
+      setImagePreview(null);
+    }
+  }, [params.conditioning_image]);
+
+  useEffect(() => {
+    if (!params.video_conditioning) {
+      setVideoPreview(null);
+    }
+  }, [params.video_conditioning]);
 
   const handleImageUpload = useCallback(
     async (file: File) => {
@@ -167,6 +179,24 @@ export function ConditioningPanel({
         {params.conditioning_image && (
           <div className="space-y-4 p-4 rounded-xl bg-secondary/30">
             <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Conditioning Mode</Label>
+              <Select
+                value={params.conditioning_mode || "guide"}
+                onValueChange={(v) =>
+                  onParamsChange({ conditioning_mode: v as "replace" | "guide" })
+                }
+              >
+                <SelectTrigger className="bg-card">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="guide">Guide</SelectItem>
+                  <SelectItem value="replace">Replace</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Frame Index</Label>
                 <span className="text-xs font-mono text-primary">
@@ -208,7 +238,7 @@ export function ConditioningPanel({
       </div>
 
       {/* Video Conditioning (IC-LoRA) */}
-      {(params.pipeline === "ic_lora" || params.pipeline === "keyframe") && (
+      {params.pipeline === "ic_lora" && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <Video className="h-4 w-4 text-primary" />
@@ -263,22 +293,62 @@ export function ConditioningPanel({
           )}
 
           {params.video_conditioning && (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Conditioning Mode</Label>
-              <Select
-                value={params.conditioning_mode || "guide"}
-                onValueChange={(v) =>
-                  onParamsChange({ conditioning_mode: v as "replace" | "guide" })
-                }
-              >
-                <SelectTrigger className="bg-card">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="guide">Guide</SelectItem>
-                  <SelectItem value="replace">Replace</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="space-y-4 p-4 rounded-xl bg-secondary/30">
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Conditioning Mode</Label>
+                <Select
+                  value={params.conditioning_mode || "guide"}
+                  onValueChange={(v) =>
+                    onParamsChange({ conditioning_mode: v as "replace" | "guide" })
+                  }
+                >
+                  <SelectTrigger className="bg-card">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="guide">Guide</SelectItem>
+                    <SelectItem value="replace">Replace</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">Frame Index</Label>
+                  <span className="text-xs font-mono text-primary">
+                    {params.conditioning_frame_idx || 0}
+                  </span>
+                </div>
+                <Slider
+                  value={[params.conditioning_frame_idx || 0]}
+                  onValueChange={([v]) =>
+                    onParamsChange({ conditioning_frame_idx: v })
+                  }
+                  min={0}
+                  max={params.num_frames - 1}
+                  step={1}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">Strength</Label>
+                  <span className="text-xs font-mono text-primary">
+                    {(params.conditioning_strength || 1.0).toFixed(2)}
+                  </span>
+                </div>
+                <Slider
+                  value={[params.conditioning_strength || 1.0]}
+                  onValueChange={([v]) =>
+                    onParamsChange({ conditioning_strength: v })
+                  }
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  className="w-full"
+                />
+              </div>
             </div>
           )}
         </div>

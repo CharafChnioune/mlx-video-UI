@@ -8,12 +8,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Cpu, Zap, Sparkles, Video, Check } from "lucide-react";
+import { useEffect } from "react";
 
 interface ModelSelectorProps {
   pipeline: string;
@@ -64,6 +66,7 @@ const models = [
     size: "~10GB",
     speed: "Fastest",
     badge: "Recommended",
+    pipeline: "distilled",
   },
   {
     value: "AITRADER/ltx2-distilled-8bit-mlx",
@@ -71,6 +74,7 @@ const models = [
     size: "~19GB",
     speed: "Fast",
     badge: null,
+    pipeline: "distilled",
   },
   {
     value: "AITRADER/ltx2-dev-4bit-mlx",
@@ -78,6 +82,7 @@ const models = [
     size: "~10GB",
     speed: "Medium",
     badge: null,
+    pipeline: "dev",
   },
   {
     value: "AITRADER/ltx2-dev-8bit-mlx",
@@ -85,6 +90,7 @@ const models = [
     size: "~19GB",
     speed: "Slower",
     badge: "Highest Quality",
+    pipeline: "dev",
   },
 ];
 
@@ -94,6 +100,21 @@ export function ModelSelector({
   modelRepo,
   onModelRepoChange,
 }: ModelSelectorProps) {
+  const filteredModels = models.filter((model) => {
+    if (pipeline === "distilled") {
+      return model.pipeline === "distilled";
+    }
+    return model.pipeline === "dev";
+  });
+
+  useEffect(() => {
+    if (!filteredModels.find((model) => model.value === modelRepo)) {
+      if (filteredModels.length > 0) {
+        onModelRepoChange(filteredModels[0].value);
+      }
+    }
+  }, [filteredModels, modelRepo, onModelRepoChange]);
+
   return (
     <div className="space-y-6">
       {/* Pipeline Selection */}
@@ -188,7 +209,7 @@ export function ModelSelector({
             </SelectValue>
           </SelectTrigger>
           <SelectContent className="glass-card border-border/50">
-            {models.map((model) => (
+            {filteredModels.map((model) => (
               <SelectItem
                 key={model.value}
                 value={model.value}
@@ -217,6 +238,16 @@ export function ModelSelector({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Custom Model Repo / Path</Label>
+        <Input
+          value={modelRepo}
+          onChange={(e) => onModelRepoChange(e.target.value)}
+          placeholder="AITRADER/ltx2-dev-8bit-mlx or /path/to/model"
+          className="font-mono text-xs"
+        />
       </div>
     </div>
   );

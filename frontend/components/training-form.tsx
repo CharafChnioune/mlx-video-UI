@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,6 +54,7 @@ import {
   startTraining,
   stopTraining,
   connectTrainingWebSocket,
+  getDefaultSettings,
 } from "@/lib/api";
 
 const trainingModes = [
@@ -82,6 +83,12 @@ const strategies = [
     value: "video_to_video",
     label: "Video to Video",
     description: "IC-LoRA style conditioning",
+    icon: RefreshCw,
+  },
+  {
+    value: "ic_lora",
+    label: "IC-LoRA",
+    description: "Instruction conditioned video training",
     icon: RefreshCw,
   },
 ];
@@ -126,6 +133,18 @@ export function TrainingForm() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [validationOpen, setValidationOpen] = useState(false);
   const [loraOpen, setLoraOpen] = useState(true);
+
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        const defaults = await getDefaultSettings();
+        setParams((prev) => ({ ...prev, ...defaults.training }));
+      } catch {
+        // ignore
+      }
+    };
+    loadDefaults();
+  }, []);
 
   const updateParams = useCallback((updates: Partial<TrainingParams>) => {
     setParams((prev) => ({ ...prev, ...updates }));
@@ -255,12 +274,21 @@ export function TrainingForm() {
                 {strategies.map((strategy) => {
                   const Icon = strategy.icon;
                   const isSelected = params.strategy === strategy.value;
-                  const isDisabled = strategy.value === "video_to_video" && params.training_mode === "full";
+                  const isDisabled =
+                    (strategy.value === "video_to_video" || strategy.value === "ic_lora") &&
+                    params.training_mode === "full";
                   return (
                     <Tooltip key={strategy.value}>
                       <TooltipTrigger asChild>
                         <button
-                          onClick={() => updateParams({ strategy: strategy.value as "text_to_video" | "video_to_video" })}
+                          onClick={() =>
+                            updateParams({
+                              strategy: strategy.value as
+                                | "text_to_video"
+                                | "video_to_video"
+                                | "ic_lora",
+                            })
+                          }
                           disabled={isTraining || isDisabled}
                           className={`
                             relative flex flex-col items-start p-4 rounded-xl border transition-all duration-300

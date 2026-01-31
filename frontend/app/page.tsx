@@ -20,7 +20,7 @@ export default function Home() {
             Create stunning AI-generated videos using state-of-the-art LTX-2
             models, optimized for{" "}
             <span className="text-foreground font-medium">Apple Silicon</span> with MLX.
-            Fast, local, and private.
+            Fast (Slow), local, and private.
           </p>
 
           {/* Feature badges */}

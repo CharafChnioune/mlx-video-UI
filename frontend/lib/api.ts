@@ -16,17 +16,25 @@ export interface GenerationParams {
   steps?: number;
   cfg_scale?: number;
   model_repo?: string;
+  text_encoder_repo?: string;
   checkpoint_path?: string;
   enhance_prompt?: boolean;
-  tiling?: "auto" | "on" | "off";
+  auto_output_name?: boolean;
+  tiling?: "auto" | "none" | "default" | "aggressive" | "conservative" | "spatial" | "temporal";
   cache_limit_gb?: number;
+  memory_limit_gb?: number;
   audio?: boolean;
   stream?: boolean;
+  mem_log?: boolean;
+  clear_cache?: boolean;
   conditioning_image?: string;
   conditioning_frame_idx?: number;
   conditioning_strength?: number;
   video_conditioning?: string;
   conditioning_mode?: "replace" | "guide";
+  loras?: { path: string; strength: number }[];
+  distilled_loras?: { path: string; strength: number }[];
+  extra_args?: string[];
 }
 
 export interface GenerationJob {
@@ -47,6 +55,35 @@ export interface ProgressUpdate {
   error?: string;
 }
 
+export interface JobStatusResponse {
+  job_id: string;
+  status: "pending" | "processing" | "completed" | "error";
+  progress?: number;
+  current_step?: string;
+  output_path?: string;
+  error?: string;
+}
+
+export interface EnhanceResponse {
+  enhanced: string;
+}
+
+export type EnhanceProvider = "local" | "ollama" | "lmstudio";
+
+export interface EnhanceRequest {
+  prompt: string;
+  provider: EnhanceProvider;
+  model?: string;
+  base_url?: string;
+  max_tokens?: number;
+  temperature?: number;
+  seed?: number;
+}
+
+export interface EnhanceModelsResponse {
+  models: string[];
+}
+
 // =====================
 // TRAINING TYPES
 // =====================
@@ -65,7 +102,7 @@ export interface TrainingParams {
   training_mode: "lora" | "full";
 
   // Training strategy
-  strategy: "text_to_video" | "video_to_video";
+  strategy: "text_to_video" | "video_to_video" | "ic_lora";
   with_audio: boolean;
   first_frame_conditioning_p: number;
 
@@ -106,6 +143,7 @@ export interface TrainingParams {
   validation_seed: number;
   validation_inference_steps: number;
   validation_guidance_scale: number;
+  validation_fps: number;
   skip_initial_validation: boolean;
 
   // Output
@@ -185,6 +223,7 @@ export const defaultTrainingParams: TrainingParams = {
   validation_seed: 42,
   validation_inference_steps: 50,
   validation_guidance_scale: 4.0,
+  validation_fps: 24.0,
   skip_initial_validation: false,
 
   output_dir: "./training_output",
@@ -194,6 +233,41 @@ export const defaultTrainingParams: TrainingParams = {
   wandb_enabled: false,
   wandb_project: "ltx-trainer",
 };
+
+// =====================
+// SYSTEM API
+// =====================
+
+export interface HardwareInfo {
+  platform: string;
+  cpu: string;
+  cores: number;
+  memory_gb: number;
+  is_apple_silicon: boolean;
+  mlx_version?: string | null;
+  python_version: string;
+}
+
+export interface DefaultSettings {
+  generation: Partial<GenerationParams>;
+  training: Partial<TrainingParams>;
+}
+
+export async function getHardwareInfo(): Promise<HardwareInfo> {
+  const response = await fetch(`${API_BASE}/api/system/hardware`);
+  if (!response.ok) {
+    throw new Error("Failed to fetch hardware info");
+  }
+  return response.json();
+}
+
+export async function getDefaultSettings(): Promise<DefaultSettings> {
+  const response = await fetch(`${API_BASE}/api/system/defaults`);
+  if (!response.ok) {
+    throw new Error("Failed to fetch defaults");
+  }
+  return response.json();
+}
 
 // =====================
 // GALLERY TYPES
@@ -236,14 +310,12 @@ export async function startGeneration(
   return response.json();
 }
 
-export async function getJobStatus(jobId: string): Promise<GenerationJob> {
+export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
   const response = await fetch(`${API_BASE}/api/status/${jobId}`);
-
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || "Failed to get job status");
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to fetch job status");
   }
-
   return response.json();
 }
 
@@ -290,7 +362,7 @@ export function connectWebSocket(
   onClose?: () => void
 ): WebSocket {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/progress/${jobId}`);
+  const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/progress/${jobId}`);
 
   ws.onmessage = (event) => {
     try {
@@ -369,7 +441,7 @@ export function connectTrainingWebSocket(
   onClose?: () => void
 ): WebSocket {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/training/${jobId}`);
+  const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/training/${jobId}`);
 
   ws.onmessage = (event) => {
     try {
@@ -404,6 +476,24 @@ export async function listCheckpoints(): Promise<string[]> {
 }
 
 // =====================
+// LoRA API
+// =====================
+
+export interface LoraItem {
+  name: string;
+  path: string;
+}
+
+export async function listLoras(): Promise<LoraItem[]> {
+  const response = await fetch(`${API_BASE}/api/loras`);
+  if (!response.ok) {
+    return [];
+  }
+  const data = await response.json();
+  return data.loras || [];
+}
+
+// =====================
 // GALLERY API
 // =====================
 
@@ -416,6 +506,34 @@ export async function listVideos(): Promise<GalleryVideo[]> {
 
   const data = await response.json();
   return data.videos || [];
+}
+
+export async function enhancePrompt(request: EnhanceRequest): Promise<EnhanceResponse> {
+  const response = await fetch(`${API_BASE}/api/enhance`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "Prompt enhancement failed");
+  }
+
+  return response.json();
+}
+
+export async function getEnhanceModels(
+  provider: EnhanceProvider,
+  baseUrl?: string
+): Promise<EnhanceModelsResponse> {
+  const params = new URLSearchParams({ provider });
+  if (baseUrl) params.set("base_url", baseUrl);
+  const response = await fetch(`${API_BASE}/api/enhance/models?${params.toString()}`);
+  if (!response.ok) {
+    return { models: [] };
+  }
+  return response.json();
 }
 
 export async function deleteVideo(videoId: string): Promise<void> {
