@@ -72,12 +72,14 @@ export interface JobStatusResponse {
 
 export interface EnhanceResponse {
   enhanced: string;
+  negative_prompt?: string;
 }
 
 export type EnhanceProvider = "local" | "ollama" | "lmstudio";
 
 export interface EnhanceRequest {
   prompt: string;
+  negative_prompt?: string;
   provider: EnhanceProvider;
   model?: string;
   base_url?: string;

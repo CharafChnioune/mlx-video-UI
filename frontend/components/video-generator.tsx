@@ -443,14 +443,19 @@ export function VideoGenerator() {
           : enhanceBaseUrl.trim() || enhanceDefaults[enhanceProvider];
       const result = await enhancePrompt({
         prompt: params.prompt,
+        negative_prompt: params.negative_prompt || undefined,
         provider: enhanceProvider,
         model: enhanceProvider === "local" ? undefined : enhanceModel || undefined,
         base_url: baseUrl,
       });
-      updateParams({
+      const updates: Partial<GenerationParams> = {
         prompt: result.enhanced,
         auto_output_name: true,
-      });
+      };
+      if (result.negative_prompt && result.negative_prompt.trim()) {
+        updates.negative_prompt = result.negative_prompt.trim();
+      }
+      updateParams(updates);
     } catch (e) {
       setEnhanceError(e instanceof Error ? e.message : "Prompt enhancement failed");
     } finally {

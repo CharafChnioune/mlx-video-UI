@@ -9,6 +9,7 @@ router = APIRouter()
 
 class EnhanceRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
+    negative_prompt: Optional[str] = None
     provider: Literal["local", "ollama", "lmstudio"] = "local"
     model: Optional[str] = None
     base_url: Optional[str] = None
@@ -20,13 +21,15 @@ class EnhanceRequest(BaseModel):
 
 class EnhanceResponse(BaseModel):
     enhanced: str
+    negative_prompt: Optional[str] = None
 
 
 @router.post("/enhance", response_model=EnhanceResponse)
 async def enhance_prompt(req: EnhanceRequest):
     try:
-        enhanced = await prompt_enhancer.enhance(
+        enhanced, negative = await prompt_enhancer.enhance_with_negative(
             prompt=req.prompt,
+            negative_prompt=req.negative_prompt,
             provider=req.provider,
             model=req.model,
             base_url=req.base_url,
@@ -35,7 +38,7 @@ async def enhance_prompt(req: EnhanceRequest):
             seed=req.seed,
             enhancer_repo=req.enhancer_repo,
         )
-        return EnhanceResponse(enhanced=enhanced)
+        return EnhanceResponse(enhanced=enhanced, negative_prompt=negative)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
