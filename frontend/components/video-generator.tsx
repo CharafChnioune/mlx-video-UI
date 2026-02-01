@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -39,6 +40,7 @@ import {
   connectWebSocket,
   type GenerationParams,
   type ProgressUpdate,
+  type EnhanceResponse,
   getDefaultSettings,
   getHardwareInfo,
   type HardwareInfo,
@@ -119,10 +121,11 @@ export function VideoGenerator() {
   const [defaultsApplied, setDefaultsApplied] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
-  const [enhanceProvider, setEnhanceProvider] = useState<EnhanceProvider>("local");
-  const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:11434");
+  const [enhanceProvider, setEnhanceProvider] = useState<EnhanceProvider>("lmstudio");
+  const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:1234");
   const [enhanceModels, setEnhanceModels] = useState<string[]>([]);
   const [enhanceModel, setEnhanceModel] = useState<string>("");
+  const [autoEnhance, setAutoEnhance] = useState(true);
 
   const setVideoPathSafe = useCallback((path?: string) => {
     if (!path) return;
@@ -165,6 +168,53 @@ export function VideoGenerator() {
     setParams((prev) => ({ ...prev, ...updates }));
   }, []);
 
+  const applyEnhanceResult = useCallback(
+    (result: EnhanceResponse): Partial<GenerationParams> => {
+      const updates: Partial<GenerationParams> = {
+        prompt: result.enhanced,
+        auto_output_name: !result.filename,
+      };
+      if (result.negative_prompt && result.negative_prompt.trim()) {
+        updates.negative_prompt = result.negative_prompt.trim();
+      }
+      if (result.filename && result.filename.trim()) {
+        updates.output_filename = result.filename.trim();
+      } else {
+        updates.output_filename = undefined;
+      }
+      updateParams(updates);
+      return updates;
+    },
+    [updateParams]
+  );
+
+  const performEnhance = useCallback(async () => {
+    if (!params.prompt.trim()) return {};
+    if (enhanceProvider !== "ollama" && enhanceProvider !== "lmstudio") {
+      throw new Error("Select Ollama or LM Studio for enhancement.");
+    }
+    if (!enhanceModel) {
+      throw new Error("Select an enhancer model first.");
+    }
+    const baseUrl = enhanceBaseUrl.trim() || enhanceDefaults[enhanceProvider];
+    const result = await enhancePrompt({
+      prompt: params.prompt,
+      negative_prompt: params.negative_prompt || undefined,
+      provider: enhanceProvider,
+      model: enhanceModel || undefined,
+      base_url: baseUrl,
+    });
+    return applyEnhanceResult(result);
+  }, [
+    params.prompt,
+    params.negative_prompt,
+    enhanceProvider,
+    enhanceModel,
+    enhanceBaseUrl,
+    enhanceDefaults,
+    applyEnhanceResult,
+  ]);
+
   useEffect(() => {
     if (storageLoaded) return;
     try {
@@ -188,10 +238,14 @@ export function VideoGenerator() {
           provider?: EnhanceProvider;
           baseUrl?: string;
           model?: string;
+          autoEnhance?: boolean;
         };
-        if (parsed.provider) setEnhanceProvider(parsed.provider);
+        if (parsed.provider) {
+          setEnhanceProvider(parsed.provider === "local" ? "lmstudio" : parsed.provider);
+        }
         if (parsed.baseUrl) setEnhanceBaseUrl(parsed.baseUrl);
         if (parsed.model) setEnhanceModel(parsed.model);
+        if (typeof parsed.autoEnhance === "boolean") setAutoEnhance(parsed.autoEnhance);
       }
     } catch {
       // ignore storage errors
@@ -253,12 +307,13 @@ export function VideoGenerator() {
           provider: enhanceProvider,
           baseUrl: enhanceBaseUrl,
           model: enhanceModel,
+          autoEnhance,
         })
       );
     } catch {
       // ignore
     }
-  }, [enhanceProvider, enhanceBaseUrl, enhanceModel, storageLoaded]);
+  }, [enhanceProvider, enhanceBaseUrl, enhanceModel, autoEnhance, storageLoaded]);
 
   useEffect(() => {
     if (params.pipeline !== "distilled" && params.distilled_loras?.length) {
@@ -388,7 +443,27 @@ export function VideoGenerator() {
     setVideoPath(undefined);
 
     try {
-      const job = await startGeneration(params);
+      let generationParams = { ...params };
+      if (!autoEnhance) {
+        generationParams = {
+          ...generationParams,
+          auto_output_name: false,
+          output_filename: undefined,
+        };
+      } else if (!params.output_filename) {
+        setIsEnhancing(true);
+        setEnhanceError(null);
+        try {
+          const updates = await performEnhance();
+          generationParams = { ...generationParams, ...updates };
+        } catch (e) {
+          setEnhanceError(e instanceof Error ? e.message : "Prompt enhancement failed");
+        } finally {
+          setIsEnhancing(false);
+        }
+      }
+
+      const job = await startGeneration(generationParams);
       try {
         localStorage.setItem(LAST_JOB_KEY, job.job_id);
       } catch {
@@ -466,37 +541,10 @@ export function VideoGenerator() {
 
   const runEnhance = async () => {
     if (!params.prompt.trim() || isEnhancing) return;
-    if (enhanceProvider !== "local" && !enhanceModel) {
-      setEnhanceError("Select an enhancer model first.");
-      return;
-    }
     setIsEnhancing(true);
     setEnhanceError(null);
     try {
-      const baseUrl =
-        enhanceProvider === "local"
-          ? undefined
-          : enhanceBaseUrl.trim() || enhanceDefaults[enhanceProvider];
-      const result = await enhancePrompt({
-        prompt: params.prompt,
-        negative_prompt: params.negative_prompt || undefined,
-        provider: enhanceProvider,
-        model: enhanceProvider === "local" ? undefined : enhanceModel || undefined,
-        base_url: baseUrl,
-      });
-      const updates: Partial<GenerationParams> = {
-        prompt: result.enhanced,
-        auto_output_name: !result.filename,
-      };
-      if (result.negative_prompt && result.negative_prompt.trim()) {
-        updates.negative_prompt = result.negative_prompt.trim();
-      }
-      if (result.filename && result.filename.trim()) {
-        updates.output_filename = result.filename.trim();
-      } else {
-        updates.output_filename = undefined;
-      }
-      updateParams(updates);
+      await performEnhance();
     } catch (e) {
       setEnhanceError(e instanceof Error ? e.message : "Prompt enhancement failed");
     } finally {
@@ -545,8 +593,7 @@ export function VideoGenerator() {
                     <SelectTrigger className="h-8 glass border-border/50">
                       <SelectValue placeholder="Enhancer" />
                     </SelectTrigger>
-                    <SelectContent className="glass-card border-border/50">
-                      <SelectItem value="local">Local Gemma (bundled)</SelectItem>
+                  <SelectContent className="glass-card border-border/50">
                       <SelectItem value="ollama">Ollama (local)</SelectItem>
                       <SelectItem value="lmstudio">LM Studio (local)</SelectItem>
                     </SelectContent>
@@ -606,6 +653,14 @@ export function VideoGenerator() {
                       Enhance the prompt and insert the result for review
                     </TooltipContent>
                   </Tooltip>
+                  <div className="flex items-center gap-2 pl-2">
+                    <Switch
+                      checked={autoEnhance}
+                      onCheckedChange={(checked) => setAutoEnhance(Boolean(checked))}
+                      className="data-[state=checked]:bg-primary"
+                    />
+                    <span className="text-xs text-muted-foreground">Auto Enhance</span>
+                  </div>
                 </div>
               </div>
               <div className="relative">

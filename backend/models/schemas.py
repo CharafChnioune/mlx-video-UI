@@ -65,6 +65,10 @@ class GenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_prompt_enhancers(self):
+        if self.text_encoder_repo is not None and not self.text_encoder_repo.strip():
+            self.text_encoder_repo = None
+        if self.output_filename is not None and not self.output_filename.strip():
+            self.output_filename = None
         if self.pipeline == PipelineType.IC_LORA and not self.video_conditioning:
             raise ValueError("ic_lora pipeline requires video_conditioning")
         if self.pipeline == PipelineType.KEYFRAME and not self.conditioning_image:
