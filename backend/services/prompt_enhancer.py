@@ -55,6 +55,13 @@ class PromptEnhancerService:
             "You are a creative assistant. Generate a concise negative prompt to avoid artifacts and unwanted elements.",
         )
 
+    def _filename_system_prompt(self) -> str:
+        return (
+            "Return a short, filesystem-safe filename (3-8 words) describing the scene. "
+            "Use only lowercase letters and spaces; no punctuation, no quotes. "
+            "Return only the filename text, nothing else."
+        )
+
     def _resolve_python(self) -> str:
         mlx_root = self._repo_root / "mlx-video"
         venv_bin = mlx_root / ".venv" / "bin"
@@ -435,6 +442,36 @@ class PromptEnhancerService:
         negative = " ".join(negative.splitlines()).strip()
 
         return enhanced, negative
+
+    async def enhance_filename(
+        self,
+        prompt: str,
+        provider: str = "local",
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 64,
+        temperature: float = 0.3,
+        seed: int = 42,
+    ) -> Optional[str]:
+        if provider == "local":
+            return None
+
+        filename = await self._enhance_with_prompts(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+            enhancer_repo=None,
+            system_prompt=self._filename_system_prompt(),
+            system_prompt_file=None,
+            negative_prompt=None,
+            use_system_prompt_for_local=False,
+        )
+        cleaned = " ".join((filename or "").strip().split())
+        return cleaned or None
 
 
 prompt_enhancer = PromptEnhancerService()

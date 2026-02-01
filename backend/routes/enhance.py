@@ -22,6 +22,7 @@ class EnhanceRequest(BaseModel):
 class EnhanceResponse(BaseModel):
     enhanced: str
     negative_prompt: Optional[str] = None
+    filename: Optional[str] = None
 
 
 @router.post("/enhance", response_model=EnhanceResponse)
@@ -38,7 +39,16 @@ async def enhance_prompt(req: EnhanceRequest):
             seed=req.seed,
             enhancer_repo=req.enhancer_repo,
         )
-        return EnhanceResponse(enhanced=enhanced, negative_prompt=negative)
+        filename = await prompt_enhancer.enhance_filename(
+            prompt=enhanced,
+            provider=req.provider,
+            model=req.model,
+            base_url=req.base_url,
+            max_tokens=min(req.max_tokens, 64),
+            temperature=0.3,
+            seed=req.seed,
+        )
+        return EnhanceResponse(enhanced=enhanced, negative_prompt=negative, filename=filename)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

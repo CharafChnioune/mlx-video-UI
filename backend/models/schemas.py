@@ -33,6 +33,7 @@ class LoraSpec(BaseModel):
 class GenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Text prompt for video generation")
     negative_prompt: Optional[str] = Field(None, description="Negative prompt (dev pipeline only)")
+    output_filename: Optional[str] = Field(None, description="Optional output filename override")
     height: int = Field(512, ge=256, le=4096, description="Video height (divisible by 32)")
     width: int = Field(512, ge=256, le=4096, description="Video width (divisible by 32)")
     num_frames: int = Field(33, ge=9, le=4097, description="Number of frames (1 + 8*k)")

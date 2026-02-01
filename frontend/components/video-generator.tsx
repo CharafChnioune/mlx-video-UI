@@ -52,6 +52,7 @@ import {
 const defaultParams: GenerationParams = {
   prompt: "",
   negative_prompt: "",
+  output_filename: undefined,
   height: 512,
   width: 512,
   num_frames: 33,
@@ -79,6 +80,11 @@ const sanitizeParams = (raw: Partial<GenerationParams>): GenerationParams => {
   const cleaned = Object.fromEntries(
     Object.entries(raw).filter(([key]) => allowedSet.has(key))
   ) as Partial<GenerationParams>;
+  if (
+    cleaned.text_encoder_repo === "msntest2014/gemma-3-12b-it-abliterated-v2-mlx-4Bit"
+  ) {
+    delete cleaned.text_encoder_repo;
+  }
   return { ...defaultParams, ...cleaned, auto_output_name: true };
 };
 
@@ -480,10 +486,15 @@ export function VideoGenerator() {
       });
       const updates: Partial<GenerationParams> = {
         prompt: result.enhanced,
-        auto_output_name: true,
+        auto_output_name: !result.filename,
       };
       if (result.negative_prompt && result.negative_prompt.trim()) {
         updates.negative_prompt = result.negative_prompt.trim();
+      }
+      if (result.filename && result.filename.trim()) {
+        updates.output_filename = result.filename.trim();
+      } else {
+        updates.output_filename = undefined;
       }
       updateParams(updates);
     } catch (e) {
@@ -601,7 +612,12 @@ export function VideoGenerator() {
                 <Textarea
                   placeholder="Describe the video you want to generate..."
                   value={params.prompt}
-                  onChange={(e) => updateParams({ prompt: e.target.value })}
+                  onChange={(e) =>
+                    updateParams({
+                      prompt: e.target.value,
+                      output_filename: undefined,
+                    })
+                  }
                   className="min-h-[120px] bg-background/50 border-border/50 resize-none text-base focus:border-primary/50 focus:ring-primary/20 transition-all"
                 />
                 {/* Character count */}

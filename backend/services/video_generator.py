@@ -108,7 +108,7 @@ class VideoGeneratorService:
             if request.cfg_scale:
                 cmd.extend(["--cfg-scale", str(request.cfg_scale)])
 
-        if request.auto_output_name:
+        if request.auto_output_name and not request.output_filename:
             cmd.append("--auto-output-name")
 
         if request.tiling:
@@ -204,6 +204,12 @@ class VideoGeneratorService:
         """Start a video generation job."""
         job_id = str(uuid.uuid4())
         output_filename = f"video_{job_id[:8]}.mp4"
+        if request.output_filename:
+            safe_name = Path(request.output_filename).name.strip()
+            if safe_name:
+                if not safe_name.lower().endswith(".mp4"):
+                    safe_name = f"{safe_name}.mp4"
+                output_filename = safe_name
         output_path = str(self.output_dir / output_filename)
 
         job = Job(
@@ -238,7 +244,8 @@ class VideoGeneratorService:
 
             # If auto_output_name is enabled, pass directory to let mlx_video.generate choose filename.
             output_arg = output_path
-            if job.request.auto_output_name:
+            auto_output_name = job.request.auto_output_name and not job.request.output_filename
+            if auto_output_name:
                 output_arg = str(self.output_dir)
 
             cmd = self._build_command(job.request, output_arg)
@@ -379,7 +386,7 @@ class VideoGeneratorService:
 
             # If auto output name, find newest mp4 in output dir
             final_output = Path(output_path)
-            if job.request.auto_output_name:
+            if auto_output_name:
                 mp4s = sorted(self.output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
                 self._debug(f"auto_output_name detected {len(mp4s)} mp4(s) in output dir")
                 if mp4s:

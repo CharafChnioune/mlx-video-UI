@@ -11,6 +11,7 @@ const API_BASE =
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
+  output_filename?: string;
   height: number;
   width: number;
   num_frames: number;
@@ -77,6 +78,7 @@ export interface JobStatusResponse {
 export interface EnhanceResponse {
   enhanced: string;
   negative_prompt?: string;
+  filename?: string;
 }
 
 export type EnhanceProvider = "local" | "ollama" | "lmstudio";
