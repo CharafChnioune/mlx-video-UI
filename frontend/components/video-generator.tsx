@@ -256,7 +256,8 @@ export function VideoGenerator() {
         const defaults = await getDefaultSettings();
         const hw = await getHardwareInfo();
         setHardware(hw);
-        if (!defaultsApplied && !storageLoaded) {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (!defaultsApplied && !saved) {
           setParams((prev) => ({ ...prev, ...defaults.generation }));
           setDefaultsApplied(true);
         }
@@ -265,7 +266,7 @@ export function VideoGenerator() {
       }
     };
     loadDefaults();
-  }, [defaultsApplied, storageLoaded]);
+  }, [defaultsApplied]);
 
   useEffect(() => {
     if (!storageLoaded) return;

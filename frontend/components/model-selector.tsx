@@ -108,10 +108,20 @@ export function ModelSelector({
   });
 
   useEffect(() => {
-    if (!filteredModels.find((model) => model.value === modelRepo)) {
+    if (!modelRepo) {
       if (filteredModels.length > 0) {
         onModelRepoChange(filteredModels[0].value);
       }
+      return;
+    }
+
+    const isKnownModel = models.some((model) => model.value === modelRepo);
+    const isValidForPipeline = filteredModels.some(
+      (model) => model.value === modelRepo
+    );
+
+    if (isKnownModel && !isValidForPipeline && filteredModels.length > 0) {
+      onModelRepoChange(filteredModels[0].value);
     }
   }, [filteredModels, modelRepo, onModelRepoChange]);
 

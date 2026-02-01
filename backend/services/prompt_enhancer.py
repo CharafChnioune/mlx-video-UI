@@ -262,6 +262,8 @@ class PromptEnhancerService:
                 elif system_prompt:
                     cmd.extend(["--system-prompt", system_prompt])
 
+            repo_override = os.environ.get("MLX_VIDEO_REPO_PATH")
+            repo_path = Path(repo_override).expanduser() if repo_override else (self._repo_root / "mlx-video")
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -271,7 +273,7 @@ class PromptEnhancerService:
                     "PYTHONUNBUFFERED": "1",
                     "PYTHONPATH": os.pathsep.join(
                         [
-                            str(self._repo_root / "mlx-video"),
+                            str(repo_path),
                             os.environ.get("PYTHONPATH", ""),
                         ]
                     ).strip(os.pathsep),
