@@ -118,7 +118,7 @@ export function VideoGenerator() {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
   const [enhanceProvider, setEnhanceProvider] = useState<EnhanceProvider>("ollama");
-  const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:1234");
+  const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:11434");
   const [enhanceModels, setEnhanceModels] = useState<string[]>([]);
   const [enhanceModel, setEnhanceModel] = useState<string>("");
   const [autoEnhance, setAutoEnhance] = useState(true);
@@ -165,7 +165,7 @@ export function VideoGenerator() {
   }, []);
 
   const applyEnhanceResult = useCallback(
-    (result: EnhanceResponse): Partial<GenerationParams> => {
+    (result: EnhanceResponse, applyToState: boolean = true): Partial<GenerationParams> => {
       const updates: Partial<GenerationParams> = {
         prompt: result.enhanced,
         auto_output_name: false,
@@ -178,13 +178,15 @@ export function VideoGenerator() {
       } else {
         updates.output_filename = undefined;
       }
-      updateParams(updates);
+      if (applyToState) {
+        updateParams(updates);
+      }
       return updates;
     },
     [updateParams]
   );
 
-  const performEnhance = useCallback(async () => {
+  const performEnhance = useCallback(async (applyToState: boolean = true) => {
     if (!params.prompt.trim()) return {};
     if (enhanceProvider !== "ollama" && enhanceProvider !== "lmstudio") {
       throw new Error("Select Ollama or LM Studio for enhancement.");
@@ -200,7 +202,7 @@ export function VideoGenerator() {
       model: enhanceModel || undefined,
       base_url: baseUrl,
     });
-    return applyEnhanceResult(result);
+    return applyEnhanceResult(result, applyToState);
   }, [
     params.prompt,
     params.negative_prompt,
@@ -440,7 +442,7 @@ export function VideoGenerator() {
         setIsEnhancing(true);
         setEnhanceError(null);
         try {
-          const updates = await performEnhance();
+          const updates = await performEnhance(false);
           generationParams = { ...generationParams, ...updates, auto_output_name: false };
         } catch (e) {
           setEnhanceError(e instanceof Error ? e.message : "Prompt enhancement failed");
