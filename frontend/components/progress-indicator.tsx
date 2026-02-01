@@ -1,12 +1,12 @@
 "use client";
-
-import { Progress } from "@/components/ui/progress";
 import { Loader2, CheckCircle2, XCircle, Sparkles, Zap, Film, Download } from "lucide-react";
 
 interface ProgressIndicatorProps {
   status: "idle" | "pending" | "processing" | "completed" | "error";
   progress: number;
   currentStep?: string;
+  downloadProgress?: number;
+  downloadStep?: string;
   error?: string;
 }
 
@@ -21,6 +21,8 @@ export function ProgressIndicator({
   status,
   progress,
   currentStep,
+  downloadProgress,
+  downloadStep,
   error,
 }: ProgressIndicatorProps) {
   if (status === "idle") return null;
@@ -33,6 +35,10 @@ export function ProgressIndicator({
   };
 
   const currentStepIndex = getCurrentStepIndex();
+  const showDownload =
+    (status === "pending" || status === "processing") &&
+    (downloadProgress !== undefined || downloadStep);
+  const downloadValue = Math.min(100, Math.max(0, downloadProgress || 0));
 
   return (
     <div className="space-y-4 p-6 rounded-2xl glass-card border border-border/50 relative overflow-hidden">
@@ -118,6 +124,24 @@ export function ProgressIndicator({
       {/* Progress bar with neon glow */}
       {(status === "pending" || status === "processing") && (
         <div className="space-y-4 relative">
+          {showDownload && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>{downloadStep || "Downloading model weights..."}</span>
+                <span className="font-mono text-foreground">{Math.round(downloadValue)}%</span>
+              </div>
+              <div className="relative h-2 rounded-full bg-secondary/80 overflow-hidden">
+                <div
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-sky-400 via-cyan-400 to-blue-500 rounded-full transition-all duration-300"
+                  style={{ width: `${downloadValue}%` }}
+                />
+                <div
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-sky-400 via-cyan-400 to-blue-500 rounded-full blur-sm opacity-60 transition-all duration-300"
+                  style={{ width: `${downloadValue}%` }}
+                />
+              </div>
+            </div>
+          )}
           {/* Neon progress bar */}
           <div className="relative h-3 rounded-full bg-secondary overflow-hidden">
             {/* Glow effect */}

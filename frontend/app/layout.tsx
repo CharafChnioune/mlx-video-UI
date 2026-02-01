@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Navigation } from "@/components/navigation";
+import { Snowfall } from "@/components/snowfall";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -27,6 +28,9 @@ export default function RootLayout({
 
             {/* Animated grid background */}
             <div className="fixed inset-0 bg-grid opacity-50 pointer-events-none" />
+
+            {/* Snow overlay */}
+            <Snowfall />
 
             {/* Floating orbs */}
             <div className="fixed inset-0 pointer-events-none overflow-hidden">

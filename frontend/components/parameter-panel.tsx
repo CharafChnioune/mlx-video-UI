@@ -29,7 +29,6 @@ import {
   Maximize,
   Film,
   Settings2,
-  Sparkles,
   Volume2,
   HardDrive,
   Sliders,
@@ -357,27 +356,6 @@ export function ParameterPanel({ params, onParamsChange }: ParameterPanelProps) 
             <Switch
               checked={params.stream || false}
               onCheckedChange={(checked) => onParamsChange({ stream: checked })}
-              className="data-[state=checked]:bg-primary"
-            />
-          </div>
-
-          <div className="flex items-center justify-between p-4 rounded-xl glass border border-border/50 hover:border-primary/20 transition-colors group">
-            <div className="flex items-center gap-3">
-              <div className="p-1.5 rounded-lg bg-secondary/50 group-hover:bg-primary/10 transition-colors">
-                <Sparkles className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-              </div>
-              <div className="flex flex-col">
-                <Label className="text-sm cursor-pointer">Auto Output Name</Label>
-                <span className="text-xs text-muted-foreground">Generate file name from prompt</span>
-              </div>
-            </div>
-            <Switch
-              checked={params.auto_output_name || false}
-              onCheckedChange={(checked) =>
-                onParamsChange({
-                  auto_output_name: checked,
-                })
-              }
               className="data-[state=checked]:bg-primary"
             />
           </div>

@@ -60,7 +60,7 @@ const defaultParams: GenerationParams = {
   steps: 40,
   cfg_scale: 4.0,
   model_repo: "AITRADER/ltx2-distilled-4bit-mlx",
-  auto_output_name: false,
+  auto_output_name: true,
   tiling: "auto",
   cache_limit_gb: 32,
   memory_limit_gb: undefined,
@@ -80,7 +80,7 @@ const sanitizeParams = (raw: Partial<GenerationParams>): GenerationParams => {
       cleaned[key] = raw[key];
     }
   }
-  return { ...defaultParams, ...cleaned };
+  return { ...defaultParams, ...cleaned, auto_output_name: true };
 };
 
 const STORAGE_KEY = "mlx-video-ui:params:v1";
@@ -103,6 +103,8 @@ export function VideoGenerator() {
   >("idle");
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState<number | undefined>();
+  const [downloadStep, setDownloadStep] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [videoPath, setVideoPath] = useState<string | undefined>();
   const [history, setHistory] = useState<GenerationHistory[]>([]);
@@ -280,6 +282,8 @@ export function VideoGenerator() {
         setStatus(status.status);
         setProgress(status.progress || 0);
         setCurrentStep(status.current_step || "");
+        setDownloadProgress(status.download_progress);
+        setDownloadStep(status.download_step);
         setError(status.error);
         if (status.output_path) {
           setVideoPath(status.output_path);
@@ -289,10 +293,16 @@ export function VideoGenerator() {
           connectWebSocket(
             lastJob,
             (update: ProgressUpdate) => {
-              if (update.type === "progress") {
+              if (update.type === "progress" || update.type === "status") {
                 setStatus("processing");
                 setProgress(update.progress || 0);
                 setCurrentStep(update.current_step || "Processing...");
+                if (update.download_progress !== undefined) {
+                  setDownloadProgress(update.download_progress);
+                }
+                if (update.download_step !== undefined) {
+                  setDownloadStep(update.download_step);
+                }
                 if (update.output_path) {
                   setVideoPath(update.output_path);
                 }
@@ -300,10 +310,22 @@ export function VideoGenerator() {
                 setStatus("completed");
                 setProgress(100);
                 setVideoPath(update.output_path);
+                if (update.download_progress !== undefined) {
+                  setDownloadProgress(update.download_progress);
+                }
+                if (update.download_step !== undefined) {
+                  setDownloadStep(update.download_step);
+                }
                 localStorage.removeItem(LAST_JOB_KEY);
               } else if (update.type === "error") {
                 setStatus("error");
                 setError(update.error);
+                if (update.download_progress !== undefined) {
+                  setDownloadProgress(update.download_progress);
+                }
+                if (update.download_step !== undefined) {
+                  setDownloadStep(update.download_step);
+                }
                 localStorage.removeItem(LAST_JOB_KEY);
               }
             },
@@ -324,6 +346,8 @@ export function VideoGenerator() {
     setStatus("pending");
     setProgress(0);
     setCurrentStep("Starting generation...");
+    setDownloadProgress(undefined);
+    setDownloadStep(undefined);
     setError(undefined);
     setVideoPath(undefined);
 
@@ -338,10 +362,16 @@ export function VideoGenerator() {
       const ws = connectWebSocket(
         job.job_id,
         (update: ProgressUpdate) => {
-          if (update.type === "progress") {
+          if (update.type === "progress" || update.type === "status") {
             setStatus("processing");
             setProgress(update.progress || 0);
             setCurrentStep(update.current_step || "Processing...");
+            if (update.download_progress !== undefined) {
+              setDownloadProgress(update.download_progress);
+            }
+            if (update.download_step !== undefined) {
+              setDownloadStep(update.download_step);
+            }
             if (update.output_path) {
               setVideoPath(update.output_path);
             }
@@ -349,6 +379,12 @@ export function VideoGenerator() {
             setStatus("completed");
             setProgress(100);
             setVideoPath(update.output_path);
+            if (update.download_progress !== undefined) {
+              setDownloadProgress(update.download_progress);
+            }
+            if (update.download_step !== undefined) {
+              setDownloadStep(update.download_step);
+            }
             try {
               localStorage.removeItem(LAST_JOB_KEY);
             } catch {
@@ -368,6 +404,12 @@ export function VideoGenerator() {
           } else if (update.type === "error") {
             setStatus("error");
             setError(update.error);
+            if (update.download_progress !== undefined) {
+              setDownloadProgress(update.download_progress);
+            }
+            if (update.download_step !== undefined) {
+              setDownloadStep(update.download_step);
+            }
             try {
               localStorage.removeItem(LAST_JOB_KEY);
             } catch {
@@ -407,6 +449,7 @@ export function VideoGenerator() {
       });
       updateParams({
         prompt: result.enhanced,
+        auto_output_name: true,
       });
     } catch (e) {
       setEnhanceError(e instanceof Error ? e.message : "Prompt enhancement failed");
@@ -709,6 +752,8 @@ export function VideoGenerator() {
             progress={progress}
             currentStep={currentStep}
             error={error}
+            downloadProgress={downloadProgress}
+            downloadStep={downloadStep}
           />
         )}
 

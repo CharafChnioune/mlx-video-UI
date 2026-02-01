@@ -89,6 +89,8 @@ class JobStatusResponse(BaseModel):
     status: JobStatus
     progress: Optional[float] = None
     current_step: Optional[str] = None
+    download_progress: Optional[float] = None
+    download_step: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -103,6 +105,8 @@ class ProgressUpdate(BaseModel):
     job_id: str
     progress: Optional[float] = None
     current_step: Optional[str] = None
+    download_progress: Optional[float] = None
+    download_step: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 

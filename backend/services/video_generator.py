@@ -18,6 +18,8 @@ class Job:
     request: GenerationRequest
     progress: float = 0.0
     current_step: str = ""
+    download_progress: float = 0.0
+    download_step: str = ""
     output_path: Optional[str] = None
     error: Optional[str] = None
     process: Optional[asyncio.subprocess.Process] = None
@@ -150,8 +152,23 @@ class VideoGeneratorService:
 
         return cmd
 
-    def _parse_progress(self, line: str) -> tuple[Optional[float], Optional[str]]:
-        """Parse progress from mlx-video output."""
+    def _parse_download_progress(self, line: str) -> tuple[Optional[float], Optional[str]]:
+        """Parse model download progress from mlx-video output."""
+        lowered = line.lower()
+        if "downloading" in lowered and "model" in lowered:
+            return 0.0, "Downloading model weights..."
+        if "fetching" in lowered or "downloading" in lowered:
+            pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', line)
+            if pct_match:
+                return float(pct_match.group(1)), "Downloading model weights..."
+            return None, "Downloading model weights..."
+        return None, None
+
+    def _parse_generation_progress(self, line: str) -> tuple[Optional[float], Optional[str]]:
+        """Parse generation progress from mlx-video output."""
+        lowered = line.lower()
+        if "fetching" in lowered or ("downloading" in lowered and "model" in lowered):
+            return None, None
         # Look for progress patterns like "Step 10/40" or percentage
         step_match = re.search(r'(?:Step|step)\s+(\d+)\s*/\s*(\d+)', line)
         if step_match:
@@ -165,13 +182,15 @@ class VideoGeneratorService:
             return float(pct_match.group(1)), None
 
         # Look for stage indicators
-        if "loading" in line.lower():
+        if "loading" in lowered:
             return None, "Loading model..."
-        if "encoding" in line.lower():
+        if "encoding" in lowered:
             return None, "Encoding prompt..."
-        if "generating" in line.lower() or "sampling" in line.lower():
+        if "generating" in lowered or "sampling" in lowered:
             return None, "Generating frames..."
-        if "saving" in line.lower() or "writing" in line.lower():
+        if "decoding video" in lowered or "streaming frames" in lowered:
+            return None, "Decoding video..."
+        if "saving" in lowered or "writing" in lowered:
             return None, "Saving video..."
 
         return None, None
@@ -207,7 +226,9 @@ class VideoGeneratorService:
                 "type": "status",
                 "job_id": job_id,
                 "progress": 0,
-                "current_step": "Starting generation..."
+                "current_step": "Starting generation...",
+                "download_progress": job.download_progress,
+                "download_step": job.download_step,
             })
 
             # If auto_output_name is enabled, pass directory to let mlx_video.generate choose filename.
@@ -216,20 +237,6 @@ class VideoGeneratorService:
                 output_arg = str(self.output_dir)
 
             cmd = self._build_command(job.request, output_arg)
-
-            # If streaming, expose temp video path early for live preview
-            if job.request.stream and not job.request.auto_output_name:
-                temp_path = Path(output_path)
-                if temp_path.suffix == ".mp4":
-                    temp_path = temp_path.with_suffix(".temp.mp4")
-                job.output_path = str(temp_path)
-                await self._notify_progress(job_id, {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "progress": job.progress,
-                    "current_step": "Streaming preview...",
-                    "output_path": job.output_path,
-                })
 
             # Create subprocess
             process = await asyncio.create_subprocess_exec(
@@ -251,36 +258,76 @@ class VideoGeneratorService:
 
             # Read output line by line
             last_progress = 0.0
+            pending_output_context: Optional[str] = None
+            pending_output_buffer = ""
+            stage_floor = {
+                "Loading model...": 5.0,
+                "Encoding prompt...": 10.0,
+                "Generating frames...": 20.0,
+                "Decoding video...": 85.0,
+                "Saving video...": 95.0,
+            }
+
             while True:
                 line = await process.stdout.readline()
                 if not line:
                     break
 
                 line_str = line.decode('utf-8', errors='ignore').strip()
-                if line_str:
-                    print(f"[mlx-video] {line_str}")
+                if not line_str:
+                    continue
 
-                    progress, step = self._parse_progress(line_str)
-                    if progress is not None:
-                        last_progress = progress
-                        job.progress = progress
-                    if step:
-                        job.current_step = step
+                print(f"[mlx-video] {line_str}")
 
-                    if "Streamed video to " in line_str:
-                        try:
-                            path = line_str.split("Streamed video to ", 1)[1].strip()
-                            job.output_path = path
-                        except Exception:
-                            pass
+                download_progress, download_step = self._parse_download_progress(line_str)
+                if download_step:
+                    job.download_step = download_step
+                if download_progress is not None:
+                    job.download_progress = min(100.0, max(0.0, download_progress))
+                    if job.download_progress >= 100:
+                        job.download_step = "Download complete"
 
-                    await self._notify_progress(job_id, {
-                        "type": "progress",
-                        "job_id": job_id,
-                        "progress": job.progress,
-                        "current_step": job.current_step,
-                        "output_path": job.output_path,
-                    })
+                progress, step = self._parse_generation_progress(line_str)
+                if progress is not None:
+                    last_progress = progress
+                    job.progress = max(job.progress, min(100.0, progress))
+                if step:
+                    job.current_step = step
+                    floor = stage_floor.get(step)
+                    if floor is not None:
+                        job.progress = max(job.progress, floor)
+
+                pending_output_armed = False
+                if "Streamed video to" in line_str:
+                    remainder = line_str.split("Streamed video to", 1)[1].strip()
+                    if remainder:
+                        path = Path(remainder)
+                        if path.exists():
+                            job.output_path = str(path)
+                    else:
+                        pending_output_context = "stream"
+                        pending_output_buffer = ""
+                        pending_output_armed = True
+
+                if pending_output_context and not pending_output_armed:
+                    if "/" in line_str or line_str.endswith(".mp4") or line_str.startswith(".mp4"):
+                        pending_output_buffer = f"{pending_output_buffer}{line_str}".strip()
+                        if ".mp4" in pending_output_buffer:
+                            path = Path(pending_output_buffer)
+                            if path.exists():
+                                job.output_path = str(path)
+                            pending_output_context = None
+                            pending_output_buffer = ""
+
+                await self._notify_progress(job_id, {
+                    "type": "progress",
+                    "job_id": job_id,
+                    "progress": job.progress,
+                    "current_step": job.current_step,
+                    "download_progress": job.download_progress,
+                    "download_step": job.download_step,
+                    "output_path": job.output_path,
+                })
 
             # Wait for process to complete
             await process.wait()

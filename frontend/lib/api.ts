@@ -42,6 +42,8 @@ export interface GenerationJob {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
@@ -51,6 +53,8 @@ export interface ProgressUpdate {
   job_id: string;
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
@@ -60,6 +64,8 @@ export interface JobStatusResponse {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
