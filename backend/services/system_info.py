@@ -71,10 +71,7 @@ def get_hardware_info() -> Dict[str, Any]:
 def recommended_defaults() -> Dict[str, Any]:
     hw = get_hardware_info()
     mem = hw["memory_gb"] or 0.0
-    text_encoder_repo = os.environ.get(
-        "LTX_TEXT_ENCODER_REPO",
-        "msntest2014/gemma-3-12b-it-abliterated-v2-mlx-4Bit",
-    )
+    text_encoder_repo = os.environ.get("LTX_TEXT_ENCODER_REPO")
 
     if mem >= 64:
         model = "AITRADER/ltx2-dev-8bit-mlx"
@@ -91,13 +88,13 @@ def recommended_defaults() -> Dict[str, Any]:
     elif mem >= 32:
         model = "AITRADER/ltx2-distilled-8bit-mlx"
         pipeline = "distilled"
-        width, height = 832, 480
+        width, height = 832, 512
         steps = 8
         cfg = 4.0
     else:
         model = "AITRADER/ltx2-distilled-4bit-mlx"
         pipeline = "distilled"
-        width, height = 704, 480
+        width, height = 704, 448
         steps = 8
         cfg = 4.0
 
@@ -105,7 +102,6 @@ def recommended_defaults() -> Dict[str, Any]:
 
     generation = {
         "model_repo": model,
-        "text_encoder_repo": text_encoder_repo,
         "pipeline": pipeline,
         "width": width,
         "height": height,
@@ -119,6 +115,8 @@ def recommended_defaults() -> Dict[str, Any]:
         "audio": True,
         "stream": True,
     }
+    if text_encoder_repo:
+        generation["text_encoder_repo"] = text_encoder_repo
 
     training = {
         "model_repo": model,

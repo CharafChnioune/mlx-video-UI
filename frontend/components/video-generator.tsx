@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,6 +45,7 @@ import {
   enhancePrompt,
   getJobStatus,
   getEnhanceModels,
+  getVideoUrl,
   type EnhanceProvider,
 } from "@/lib/api";
 
@@ -105,6 +106,7 @@ export function VideoGenerator() {
   const [downloadStep, setDownloadStep] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [videoPath, setVideoPath] = useState<string | undefined>();
+  const videoRequestId = useRef(0);
   const [history, setHistory] = useState<GenerationHistory[]>([]);
   const [activeTab, setActiveTab] = useState("parameters");
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
@@ -115,6 +117,36 @@ export function VideoGenerator() {
   const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:11434");
   const [enhanceModels, setEnhanceModels] = useState<string[]>([]);
   const [enhanceModel, setEnhanceModel] = useState<string>("");
+
+  const setVideoPathSafe = useCallback((path?: string) => {
+    if (!path) return;
+    const requestId = ++videoRequestId.current;
+    const filename = path.split("/").pop() || "";
+    const isTemp = filename.endsWith(".temp.mp4");
+
+    if (!isTemp) {
+      setVideoPath(path);
+      return;
+    }
+
+    const url = getVideoUrl(filename);
+    void (async () => {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+          const resp = await fetch(url, { method: "HEAD", cache: "no-store" });
+          if (resp.ok) {
+            if (requestId === videoRequestId.current) {
+              setVideoPath(path);
+            }
+            return;
+          }
+        } catch {
+          // ignore fetch errors
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    })();
+  }, []);
 
   const enhanceDefaults: Record<EnhanceProvider, string> = {
     local: "",
@@ -284,7 +316,7 @@ export function VideoGenerator() {
         setDownloadStep(status.download_step);
         setError(status.error);
         if (status.output_path) {
-          setVideoPath(status.output_path);
+          setVideoPathSafe(status.output_path);
         }
 
         if (status.status === "processing" || status.status === "pending") {
@@ -302,12 +334,12 @@ export function VideoGenerator() {
                   setDownloadStep(update.download_step);
                 }
                 if (update.output_path) {
-                  setVideoPath(update.output_path);
+                  setVideoPathSafe(update.output_path);
                 }
               } else if (update.type === "complete") {
                 setStatus("completed");
                 setProgress(100);
-                setVideoPath(update.output_path);
+                setVideoPathSafe(update.output_path);
                 if (update.download_progress !== undefined) {
                   setDownloadProgress(update.download_progress);
                 }
@@ -371,12 +403,12 @@ export function VideoGenerator() {
               setDownloadStep(update.download_step);
             }
             if (update.output_path) {
-              setVideoPath(update.output_path);
+              setVideoPathSafe(update.output_path);
             }
           } else if (update.type === "complete") {
             setStatus("completed");
             setProgress(100);
-            setVideoPath(update.output_path);
+            setVideoPathSafe(update.output_path);
             if (update.download_progress !== undefined) {
               setDownloadProgress(update.download_progress);
             }
@@ -464,7 +496,7 @@ export function VideoGenerator() {
   const loadFromHistory = (item: GenerationHistory) => {
     setParams(item.params);
     if (item.videoPath) {
-      setVideoPath(item.videoPath);
+      setVideoPathSafe(item.videoPath);
       setStatus("completed");
     }
   };
