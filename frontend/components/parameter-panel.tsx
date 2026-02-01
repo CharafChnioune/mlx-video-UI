@@ -29,6 +29,7 @@ import {
   Maximize,
   Film,
   Settings2,
+  Sparkles,
   Volume2,
   HardDrive,
   Sliders,
