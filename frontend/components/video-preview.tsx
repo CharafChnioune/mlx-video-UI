@@ -36,10 +36,8 @@ export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
     setCurrentTime(0);
     try {
       videoRef.current.load();
-      if (!isTemp) {
-        void videoRef.current.play();
-        setIsPlaying(true);
-      }
+      void videoRef.current.play();
+      setIsPlaying(true);
     } catch {
       // ignore playback errors
     }
