@@ -41,6 +41,8 @@ async def get_job_status(job_id: str):
         status=job.status,
         progress=job.progress,
         current_step=job.current_step,
+        download_progress=job.download_progress,
+        download_step=job.download_step,
         output_path=job.output_path,
         error=job.error
     )
@@ -89,7 +91,9 @@ async def websocket_progress(websocket: WebSocket, job_id: str):
         "type": "status",
         "job_id": job_id,
         "progress": job.progress,
-        "current_step": job.current_step
+        "current_step": job.current_step,
+        "download_progress": job.download_progress,
+        "download_step": job.download_step,
     })
 
     # Register callback for progress updates

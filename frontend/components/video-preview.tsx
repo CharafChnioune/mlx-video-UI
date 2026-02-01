@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Download,
@@ -26,6 +26,24 @@ export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    if (!videoPath || !videoRef.current) return;
+    const isTemp = videoPath.endsWith(".temp.mp4");
+    videoRef.current.muted = isTemp;
+    setIsMuted(isTemp);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    try {
+      videoRef.current.load();
+      if (!isTemp) {
+        void videoRef.current.play();
+        setIsPlaying(true);
+      }
+    } catch {
+      // ignore playback errors
+    }
+  }, [videoPath]);
 
   const togglePlay = () => {
     if (videoRef.current) {
@@ -88,6 +106,7 @@ export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
         <div className="video-preview glass-card border border-border/50 gradient-border">
           {videoPath ? (
             <video
+              key={videoPath}
               ref={videoRef}
               src={getVideoUrl(videoPath.split("/").pop() || "")}
               className="w-full h-full rounded-lg"

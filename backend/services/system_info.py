@@ -87,13 +87,13 @@ def recommended_defaults() -> Dict[str, Any]:
     elif mem >= 32:
         model = "AITRADER/ltx2-distilled-8bit-mlx"
         pipeline = "distilled"
-        width, height = 832, 480
+        width, height = 832, 512
         steps = 8
         cfg = 4.0
     else:
         model = "AITRADER/ltx2-distilled-4bit-mlx"
         pipeline = "distilled"
-        width, height = 704, 480
+        width, height = 704, 448
         steps = 8
         cfg = 4.0
 
@@ -114,6 +114,7 @@ def recommended_defaults() -> Dict[str, Any]:
         "audio": True,
         "stream": True,
     }
+    # Do not set text_encoder_repo by default; let mlx-video pick its bundled/default encoder.
 
     training = {
         "model_repo": model,

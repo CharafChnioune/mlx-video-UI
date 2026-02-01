@@ -1,4 +1,8 @@
-const API_BASE = "";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ||
+  (typeof window !== "undefined" && window.location.port === "3000"
+    ? `http://${window.location.hostname}:8000`
+    : "");
 
 // =====================
 // GENERATION TYPES
@@ -7,6 +11,7 @@ const API_BASE = "";
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
+  output_filename?: string;
   height: number;
   width: number;
   num_frames: number;
@@ -42,6 +47,8 @@ export interface GenerationJob {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
@@ -51,6 +58,8 @@ export interface ProgressUpdate {
   job_id: string;
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
@@ -60,18 +69,23 @@ export interface JobStatusResponse {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  download_progress?: number;
+  download_step?: string;
   output_path?: string;
   error?: string;
 }
 
 export interface EnhanceResponse {
   enhanced: string;
+  negative_prompt?: string;
+  filename?: string;
 }
 
 export type EnhanceProvider = "local" | "ollama" | "lmstudio";
 
 export interface EnhanceRequest {
   prompt: string;
+  negative_prompt?: string;
   provider: EnhanceProvider;
   model?: string;
   base_url?: string;
@@ -361,8 +375,10 @@ export function connectWebSocket(
   onError?: (error: Event) => void,
   onClose?: () => void
 ): WebSocket {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/progress/${jobId}`);
+  const wsBase = API_BASE
+    ? API_BASE.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const ws = new WebSocket(`${wsBase}/api/ws/progress/${jobId}`);
 
   ws.onmessage = (event) => {
     try {

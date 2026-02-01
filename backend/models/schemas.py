@@ -33,6 +33,7 @@ class LoraSpec(BaseModel):
 class GenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Text prompt for video generation")
     negative_prompt: Optional[str] = Field(None, description="Negative prompt (dev pipeline only)")
+    output_filename: Optional[str] = Field(None, description="Optional output filename override")
     height: int = Field(512, ge=256, le=4096, description="Video height (divisible by 32)")
     width: int = Field(512, ge=256, le=4096, description="Video width (divisible by 32)")
     num_frames: int = Field(33, ge=9, le=4097, description="Number of frames (1 + 8*k)")
@@ -64,6 +65,10 @@ class GenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_prompt_enhancers(self):
+        if self.text_encoder_repo is not None and not self.text_encoder_repo.strip():
+            self.text_encoder_repo = None
+        if self.output_filename is not None and not self.output_filename.strip():
+            self.output_filename = None
         if self.pipeline == PipelineType.IC_LORA and not self.video_conditioning:
             raise ValueError("ic_lora pipeline requires video_conditioning")
         if self.pipeline == PipelineType.KEYFRAME and not self.conditioning_image:
@@ -89,6 +94,8 @@ class JobStatusResponse(BaseModel):
     status: JobStatus
     progress: Optional[float] = None
     current_step: Optional[str] = None
+    download_progress: Optional[float] = None
+    download_step: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -103,6 +110,8 @@ class ProgressUpdate(BaseModel):
     job_id: str
     progress: Optional[float] = None
     current_step: Optional[str] = None
+    download_progress: Optional[float] = None
+    download_step: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 

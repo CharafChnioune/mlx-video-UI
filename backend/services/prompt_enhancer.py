@@ -21,25 +21,51 @@ class PromptEnhancerService:
 
     def __init__(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
+        ui_root = Path(__file__).resolve().parents[2]
         self._repo_root = repo_root
+        self._ui_root = ui_root
         self._python_cmd = self._resolve_python()
         self._default_ollama = "http://127.0.0.1:11434"
         self._default_lmstudio = "http://127.0.0.1:1234"
 
-    def _load_system_prompt(self) -> str:
-        prompt_path = (
+    def _prompt_path(self, filename: str) -> Path:
+        override = self._ui_root / "backend" / "prompts" / filename
+        if override.exists():
+            return override
+        return (
             self._repo_root
             / "mlx-video"
             / "mlx_video"
             / "models"
             / "ltx"
             / "prompts"
-            / "gemma_t2v_system_prompt.txt"
+            / filename
         )
+
+    def _load_prompt_text(self, filename: str, fallback: str) -> str:
+        prompt_path = self._prompt_path(filename)
         if prompt_path.exists():
             return prompt_path.read_text()
-        # Fallback minimal prompt
-        return "You are a creative assistant. Expand the user's prompt into a detailed video prompt with audio."
+        return fallback
+
+    def _load_system_prompt(self) -> str:
+        return self._load_prompt_text(
+            "gemma_t2v_system_prompt.txt",
+            "You are a creative assistant. Expand the user's prompt into a detailed video prompt with audio.",
+        )
+
+    def _load_negative_system_prompt(self) -> str:
+        return self._load_prompt_text(
+            "gemma_t2v_negative_system_prompt.txt",
+            "You are a creative assistant. Generate a concise negative prompt to avoid artifacts and unwanted elements.",
+        )
+
+    def _filename_system_prompt(self) -> str:
+        return (
+            "Return a short, filesystem-safe filename (3-8 words) describing the scene. "
+            "Use only lowercase letters and spaces; no punctuation, no quotes. "
+            "Return only the filename text, nothing else."
+        )
 
     def _resolve_python(self) -> str:
         mlx_root = self._repo_root / "mlx-video"
@@ -74,6 +100,16 @@ class PromptEnhancerService:
         if parsed.scheme and parsed.netloc:
             return f"{parsed.scheme}://{parsed.netloc}"
         return self._default_lmstudio.rstrip("/")
+
+    def _build_user_prompt(self, prompt: str, negative_prompt: Optional[str] = None) -> str:
+        if negative_prompt:
+            return f"user prompt: {prompt}\nexisting negative prompt: {negative_prompt}"
+        return f"user prompt: {prompt}"
+
+    def _build_local_prompt(self, prompt: str, negative_prompt: Optional[str] = None) -> str:
+        if negative_prompt:
+            return f"{prompt}\nexisting negative prompt: {negative_prompt}"
+        return prompt
 
     async def _fetch_json(self, url: str, payload: Optional[dict] = None, headers: Optional[dict] = None) -> dict:
         def _do_request() -> dict:
@@ -187,31 +223,29 @@ class PromptEnhancerService:
             return [m["id"] for m in models if m.get("id")]
         return []
 
-    async def enhance(
+    async def _enhance_with_prompts(
         self,
         prompt: str,
-        provider: str = "local",
-        model: Optional[str] = None,
-        base_url: Optional[str] = None,
-        max_tokens: int = 512,
-        temperature: float = 0.7,
-        seed: int = 42,
-        enhancer_repo: Optional[str] = None,
+        provider: str,
+        model: Optional[str],
+        base_url: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        seed: int,
+        enhancer_repo: Optional[str],
+        system_prompt: str,
+        system_prompt_file: Optional[str],
+        negative_prompt: Optional[str] = None,
+        use_system_prompt_for_local: bool = True,
     ) -> str:
-        """
-        Enhance a prompt using the specified provider.
-
-        For LM Studio, uses OpenAI-compatible /v1/chat/completions endpoint
-        which supports Just-In-Time (JIT) model loading - the model will be
-        loaded automatically when the request is made.
-        """
         if provider == "local":
+            local_prompt = self._build_local_prompt(prompt, negative_prompt)
             cmd = [
                 self._python_cmd,
                 "-m",
                 "mlx_video.enhance",
                 "--prompt",
-                prompt,
+                local_prompt,
                 "--max-tokens",
                 str(max_tokens),
                 "--temperature",
@@ -222,6 +256,11 @@ class PromptEnhancerService:
             ]
             if enhancer_repo:
                 cmd.extend(["--enhancer-repo", enhancer_repo])
+            if use_system_prompt_for_local:
+                if system_prompt_file:
+                    cmd.extend(["--system-prompt-file", system_prompt_file])
+                elif system_prompt:
+                    cmd.extend(["--system-prompt", system_prompt])
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -255,8 +294,7 @@ class PromptEnhancerService:
 
             raise RuntimeError("Prompt enhancement output was not JSON")
 
-        system_prompt = self._load_system_prompt()
-        user_prompt = f"user prompt: {prompt}"
+        user_prompt = self._build_user_prompt(prompt, negative_prompt)
 
         if provider == "ollama":
             if not model:
@@ -281,9 +319,6 @@ class PromptEnhancerService:
             lm_base = self._normalize_lmstudio_base(base_url or self._default_lmstudio)
             headers = self._auth_headers()
 
-            # Use OpenAI-compatible endpoint with JIT model loading
-            # LM Studio will automatically load the model if not already loaded
-            # See: https://lmstudio.ai/docs/developer/openai-compat
             payload = {
                 "model": model,
                 "messages": [
@@ -295,7 +330,6 @@ class PromptEnhancerService:
                 "stream": False,
             }
 
-            # Try OpenAI-compatible endpoint first (supports JIT loading)
             status, data, body = await self._fetch_json_with_status(
                 lm_base + "/v1/chat/completions", payload, headers=headers
             )
@@ -306,7 +340,6 @@ class PromptEnhancerService:
                     return (choices[0]["message"].get("content") or "").strip()
                 return ""
 
-            # Parse error message
             error_msg = "LM Studio request failed"
             if data and isinstance(data, dict):
                 error_obj = data.get("error", {})
@@ -315,7 +348,6 @@ class PromptEnhancerService:
                 elif isinstance(error_obj, str):
                     error_msg = error_obj
 
-            # Check for specific errors and provide helpful messages
             if "not defined" in error_msg.lower() or "utility process" in error_msg.lower():
                 error_msg = (
                     "LM Studio internal error. Please try:\n"
@@ -331,6 +363,120 @@ class PromptEnhancerService:
             raise RuntimeError(error_msg)
 
         raise RuntimeError("Unknown provider")
+
+    async def enhance(
+        self,
+        prompt: str,
+        provider: str = "local",
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        seed: int = 42,
+        enhancer_repo: Optional[str] = None,
+    ) -> str:
+        """
+        Enhance a prompt using the specified provider.
+
+        For LM Studio, uses OpenAI-compatible /v1/chat/completions endpoint
+        which supports Just-In-Time (JIT) model loading - the model will be
+        loaded automatically when the request is made.
+        """
+        system_prompt = self._load_system_prompt()
+        return await self._enhance_with_prompts(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+            enhancer_repo=enhancer_repo,
+            system_prompt=system_prompt,
+            system_prompt_file=None,
+            negative_prompt=None,
+            use_system_prompt_for_local=False,
+        )
+
+    async def enhance_with_negative(
+        self,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+        provider: str = "local",
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        seed: int = 42,
+        enhancer_repo: Optional[str] = None,
+    ) -> tuple[str, str]:
+        system_prompt = self._load_system_prompt()
+        negative_system_prompt = self._load_negative_system_prompt()
+        negative_prompt_file = self._prompt_path("gemma_t2v_negative_system_prompt.txt")
+        negative_prompt_file_str = str(negative_prompt_file) if negative_prompt_file.exists() else None
+
+        enhanced = await self._enhance_with_prompts(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+            enhancer_repo=enhancer_repo,
+            system_prompt=system_prompt,
+            system_prompt_file=None,
+            negative_prompt=None,
+            use_system_prompt_for_local=False,
+        )
+
+        negative = await self._enhance_with_prompts(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+            enhancer_repo=enhancer_repo,
+            system_prompt=negative_system_prompt,
+            system_prompt_file=negative_prompt_file_str,
+            negative_prompt=negative_prompt,
+            use_system_prompt_for_local=True,
+        )
+        negative = " ".join(negative.splitlines()).strip()
+
+        return enhanced, negative
+
+    async def enhance_filename(
+        self,
+        prompt: str,
+        provider: str = "local",
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 64,
+        temperature: float = 0.3,
+        seed: int = 42,
+    ) -> Optional[str]:
+        if provider == "local":
+            return None
+
+        filename = await self._enhance_with_prompts(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+            enhancer_repo=None,
+            system_prompt=self._filename_system_prompt(),
+            system_prompt_file=None,
+            negative_prompt=None,
+            use_system_prompt_for_local=False,
+        )
+        cleaned = " ".join((filename or "").strip().split())
+        return cleaned or None
 
 
 prompt_enhancer = PromptEnhancerService()
