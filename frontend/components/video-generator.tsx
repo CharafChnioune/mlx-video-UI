@@ -121,6 +121,9 @@ export function VideoGenerator() {
   const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:11434");
   const [enhanceModels, setEnhanceModels] = useState<string[]>([]);
   const [enhanceModel, setEnhanceModel] = useState<string>("");
+  const resolvedEnhanceModel = enhanceModels.includes(enhanceModel)
+    ? enhanceModel
+    : enhanceModels[0] || "";
   const [autoEnhance, setAutoEnhance] = useState(true);
 
   const setVideoPathSafe = useCallback((path?: string) => {
@@ -191,7 +194,8 @@ export function VideoGenerator() {
     if (enhanceProvider !== "ollama" && enhanceProvider !== "lmstudio") {
       throw new Error("Select Ollama or LM Studio for enhancement.");
     }
-    if (!enhanceModel) {
+    const modelToUse = resolvedEnhanceModel;
+    if (!modelToUse) {
       throw new Error("Select an enhancer model first.");
     }
     const baseUrl = enhanceBaseUrl.trim() || enhanceDefaults[enhanceProvider];
@@ -199,7 +203,7 @@ export function VideoGenerator() {
       prompt: params.prompt,
       negative_prompt: params.negative_prompt || undefined,
       provider: enhanceProvider,
-      model: enhanceModel || undefined,
+      model: modelToUse || undefined,
       base_url: baseUrl,
     });
     return applyEnhanceResult(result, applyToState);
@@ -207,7 +211,7 @@ export function VideoGenerator() {
     params.prompt,
     params.negative_prompt,
     enhanceProvider,
-    enhanceModel,
+    resolvedEnhanceModel,
     enhanceBaseUrl,
     enhanceDefaults,
     applyEnhanceResult,
@@ -336,9 +340,10 @@ export function VideoGenerator() {
       try {
         const result = await getEnhanceModels(enhanceProvider, baseUrl);
         if (cancelled) return;
-        setEnhanceModels(result.models || []);
-        if (!result.models?.includes(enhanceModel)) {
-          setEnhanceModel(result.models?.[0] || "");
+        const models = result.models || [];
+        setEnhanceModels(models);
+        if (models.length && !models.includes(enhanceModel)) {
+          setEnhanceModel(models[0]);
         }
       } catch (e) {
         if (!cancelled) {
@@ -353,6 +358,12 @@ export function VideoGenerator() {
       cancelled = true;
     };
   }, [enhanceProvider, enhanceBaseUrl]);
+
+  useEffect(() => {
+    if (!enhanceModels.length && enhanceModel) {
+      setEnhanceModel("");
+    }
+  }, [enhanceModels, enhanceModel]);
 
   useEffect(() => {
     if (!storageLoaded) return;
@@ -600,7 +611,7 @@ export function VideoGenerator() {
                   />
 
                   <Select
-                    value={enhanceModel}
+                    value={resolvedEnhanceModel}
                     onValueChange={(val) => setEnhanceModel(val)}
                     disabled={enhanceModels.length === 0}
                   >
