@@ -82,11 +82,7 @@ const sanitizeParams = (raw: Partial<GenerationParams>): GenerationParams => {
   const cleaned = Object.fromEntries(
     Object.entries(raw).filter(([key]) => allowedSet.has(key))
   ) as Partial<GenerationParams>;
-  if (
-    cleaned.text_encoder_repo === "msntest2014/gemma-3-12b-it-abliterated-v2-mlx-4Bit"
-  ) {
-    delete cleaned.text_encoder_repo;
-  }
+  delete cleaned.text_encoder_repo;
   return { ...defaultParams, ...cleaned, auto_output_name: true };
 };
 
@@ -443,7 +439,10 @@ export function VideoGenerator() {
     setVideoPath(undefined);
 
     try {
-      let generationParams = { ...params };
+      let generationParams: GenerationParams = {
+        ...params,
+        text_encoder_repo: undefined,
+      };
       if (!autoEnhance) {
         generationParams = {
           ...generationParams,

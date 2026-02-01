@@ -96,7 +96,7 @@ class VideoGeneratorService:
         if request.model_repo:
             cmd.extend(["--model-repo", request.model_repo])
 
-        if request.text_encoder_repo:
+        if request.text_encoder_repo and os.environ.get("ALLOW_TEXT_ENCODER_REPO"):
             cmd.extend(["--text-encoder-repo", request.text_encoder_repo])
 
         if request.checkpoint_path:
@@ -249,6 +249,8 @@ class VideoGeneratorService:
                 output_arg = str(self.output_dir)
 
             cmd = self._build_command(job.request, output_arg)
+            if job.request.text_encoder_repo and not os.environ.get("ALLOW_TEXT_ENCODER_REPO"):
+                self._debug("Ignoring text_encoder_repo (disabled by default).")
             self._debug(
                 "Starting generation "
                 f"job_id={job_id} "

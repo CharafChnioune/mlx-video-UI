@@ -364,11 +364,14 @@ export function ParameterPanel({ params, onParamsChange }: ParameterPanelProps) 
           <div className="space-y-3 p-4 rounded-xl glass border border-border/50">
             <Label className="text-xs text-muted-foreground">Text Encoder Repo</Label>
             <Input
-              value={params.text_encoder_repo || ""}
-              onChange={(e) => onParamsChange({ text_encoder_repo: e.target.value || undefined })}
-              placeholder="(optional) HuggingFace repo or local path"
+              value=""
+              disabled
+              placeholder="Auto (uses model default)"
               className="font-mono text-xs"
             />
+            <p className="text-xs text-muted-foreground">
+              Disabled by default. Prompt enhancement uses Ollama/LM Studio only.
+            </p>
           </div>
 
           <div className="space-y-3 p-4 rounded-xl glass border border-border/50">
