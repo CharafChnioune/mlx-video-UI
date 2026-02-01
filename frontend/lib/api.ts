@@ -1,4 +1,8 @@
-const API_BASE = "";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ||
+  (typeof window !== "undefined" && window.location.port === "3000"
+    ? `http://${window.location.hostname}:8000`
+    : "");
 
 // =====================
 // GENERATION TYPES
@@ -369,8 +373,10 @@ export function connectWebSocket(
   onError?: (error: Event) => void,
   onClose?: () => void
 ): WebSocket {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/progress/${jobId}`);
+  const wsBase = API_BASE
+    ? API_BASE.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const ws = new WebSocket(`${wsBase}/api/ws/progress/${jobId}`);
 
   ws.onmessage = (event) => {
     try {

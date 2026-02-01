@@ -74,12 +74,10 @@ const defaultParams: GenerationParams = {
 
 const sanitizeParams = (raw: Partial<GenerationParams>): GenerationParams => {
   const allowed = Object.keys(defaultParams) as (keyof GenerationParams)[];
-  const cleaned: Partial<GenerationParams> = {};
-  for (const key of allowed) {
-    if (key in raw) {
-      cleaned[key] = raw[key];
-    }
-  }
+  const allowedSet = new Set<string>(allowed as string[]);
+  const cleaned = Object.fromEntries(
+    Object.entries(raw).filter(([key]) => allowedSet.has(key))
+  ) as Partial<GenerationParams>;
   return { ...defaultParams, ...cleaned, auto_output_name: true };
 };
 

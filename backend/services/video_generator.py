@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
 import re
+import shutil
+import subprocess
 
 from models.schemas import GenerationRequest, JobStatus, LoraSpec
 
@@ -70,6 +72,9 @@ class VideoGeneratorService:
                     callback(update)
             except Exception as e:
                 print(f"Error in progress callback: {e}")
+
+    def _debug(self, message: str):
+        print(f"[mlx-video-ui][debug] {message}", flush=True)
 
     def _build_command(self, request: GenerationRequest, output_path: str) -> list:
         """Build the mlx-video CLI command (mlx_video.generate)."""
@@ -237,6 +242,16 @@ class VideoGeneratorService:
                 output_arg = str(self.output_dir)
 
             cmd = self._build_command(job.request, output_arg)
+            self._debug(
+                "Starting generation "
+                f"job_id={job_id} "
+                f"pipeline={job.request.pipeline.value} "
+                f"audio={job.request.audio} "
+                f"stream={job.request.stream} "
+                f"auto_output_name={job.request.auto_output_name} "
+                f"output_arg={output_arg}"
+            )
+            self._debug(f"Command: {' '.join(cmd)}")
 
             # Create subprocess
             process = await asyncio.create_subprocess_exec(
@@ -260,6 +275,7 @@ class VideoGeneratorService:
             last_progress = 0.0
             pending_output_context: Optional[str] = None
             pending_output_buffer = ""
+            pending_output_label = ""
             stage_floor = {
                 "Loading model...": 5.0,
                 "Encoding prompt...": 10.0,
@@ -277,7 +293,7 @@ class VideoGeneratorService:
                 if not line_str:
                     continue
 
-                print(f"[mlx-video] {line_str}")
+                print(f"[mlx-video] {line_str}", flush=True)
 
                 download_progress, download_step = self._parse_download_progress(line_str)
                 if download_step:
@@ -298,26 +314,55 @@ class VideoGeneratorService:
                         job.progress = max(job.progress, floor)
 
                 pending_output_armed = False
+
+                def arm_output_capture(label: str, remainder: str):
+                    nonlocal pending_output_context, pending_output_buffer, pending_output_label, pending_output_armed
+                    pending_output_context = label
+                    pending_output_label = label
+                    pending_output_buffer = remainder.strip()
+                    pending_output_armed = True
+
+                def finalize_output_capture():
+                    nonlocal pending_output_context, pending_output_buffer, pending_output_label
+                    path_str = pending_output_buffer.strip()
+                    if not path_str:
+                        pending_output_context = None
+                        pending_output_buffer = ""
+                        return
+                    path = Path(path_str)
+                    if path.exists():
+                        job.output_path = str(path)
+                        self._debug(f"{pending_output_label}: detected output_path={job.output_path}")
+                    else:
+                        self._debug(f"{pending_output_label}: path not found: {path_str}")
+                    pending_output_context = None
+                    pending_output_buffer = ""
+
                 if "Streamed video to" in line_str:
                     remainder = line_str.split("Streamed video to", 1)[1].strip()
-                    if remainder:
-                        path = Path(remainder)
-                        if path.exists():
-                            job.output_path = str(path)
-                    else:
-                        pending_output_context = "stream"
-                        pending_output_buffer = ""
-                        pending_output_armed = True
+                    arm_output_capture("stream", remainder)
+                    if ".mp4" in pending_output_buffer:
+                        finalize_output_capture()
+
+                if "Saved video with audio to" in line_str:
+                    remainder = line_str.split("Saved video with audio to", 1)[1].strip()
+                    arm_output_capture("final_with_audio", remainder)
+                    if ".mp4" in pending_output_buffer:
+                        finalize_output_capture()
+
+                if "Saved video to" in line_str and "Saved video with audio to" not in line_str:
+                    remainder = line_str.split("Saved video to", 1)[1].strip()
+                    arm_output_capture("final", remainder)
+                    if ".mp4" in pending_output_buffer:
+                        finalize_output_capture()
+
+                if "Saved audio to" in line_str:
+                    self._debug(f"audio: {line_str}")
 
                 if pending_output_context and not pending_output_armed:
-                    if "/" in line_str or line_str.endswith(".mp4") or line_str.startswith(".mp4"):
-                        pending_output_buffer = f"{pending_output_buffer}{line_str}".strip()
-                        if ".mp4" in pending_output_buffer:
-                            path = Path(pending_output_buffer)
-                            if path.exists():
-                                job.output_path = str(path)
-                            pending_output_context = None
-                            pending_output_buffer = ""
+                    pending_output_buffer = f"{pending_output_buffer}{line_str}".strip()
+                    if ".mp4" in pending_output_buffer:
+                        finalize_output_capture()
 
                 await self._notify_progress(job_id, {
                     "type": "progress",
@@ -336,14 +381,66 @@ class VideoGeneratorService:
             final_output = Path(output_path)
             if job.request.auto_output_name:
                 mp4s = sorted(self.output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+                self._debug(f"auto_output_name detected {len(mp4s)} mp4(s) in output dir")
                 if mp4s:
                     final_output = mp4s[0]
+                self._debug(f"auto_output_name selected final_output={final_output}")
 
             if process.returncode == 0 and final_output.exists():
                 job.status = JobStatus.COMPLETED
                 job.progress = 100
                 job.output_path = str(final_output)
                 job.current_step = "Complete"
+                try:
+                    size_mb = final_output.stat().st_size / (1024 * 1024)
+                    self._debug(f"final output size={size_mb:.2f} MB path={final_output}")
+                except Exception as e:
+                    self._debug(f"final output size check failed: {e}")
+
+                if shutil.which("ffprobe"):
+                    try:
+                        audio_cmd = [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a",
+                            "-show_entries",
+                            "stream=codec_name,channels",
+                            "-of",
+                            "csv=p=0",
+                            str(final_output),
+                        ]
+                        video_cmd = [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "v",
+                            "-show_entries",
+                            "stream=codec_name,width,height,avg_frame_rate",
+                            "-of",
+                            "csv=p=0",
+                            str(final_output),
+                        ]
+                        audio_result = await asyncio.to_thread(
+                            subprocess.run,
+                            audio_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        video_result = await asyncio.to_thread(
+                            subprocess.run,
+                            video_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        self._debug(f"ffprobe audio streams: {audio_result.stdout.strip()}")
+                        self._debug(f"ffprobe video streams: {video_result.stdout.strip()}")
+                    except Exception as e:
+                        self._debug(f"ffprobe failed: {e}")
                 try:
                     params = job.request.dict() if hasattr(job.request, "dict") else job.request.model_dump()
                     if "pipeline" in params and hasattr(job.request.pipeline, "value"):
