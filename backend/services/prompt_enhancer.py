@@ -309,7 +309,8 @@ class PromptEnhancerService:
             Tuple of (success: bool, error_message: Optional[str])
         """
         headers = self._auth_headers()
-        payload = {"identifier": instance_id}
+        # LM Studio expects "instance_id" as the key (not "identifier")
+        payload = {"instance_id": instance_id}
 
         def _do_unload() -> tuple[int, Optional[dict], str]:
             data = json.dumps(payload).encode("utf-8")
@@ -429,20 +430,37 @@ class PromptEnhancerService:
         """
         Ensure a model is loaded in LM Studio, loading it if necessary.
 
+        LM Studio typically only allows one model loaded at a time.
+        If another model is loaded, we unload it first before loading the requested model.
+
         Raises RuntimeError if the model cannot be loaded.
         """
         # First check if already loaded
         if await self._is_model_loaded(base_url, model):
             return
 
+        # Check if other models are loaded and unload them first
+        loaded_models = await self._get_loaded_models(base_url)
+        for loaded in loaded_models:
+            instance_id = loaded.get("instance_id")
+            loaded_name = loaded.get("display_name") or loaded.get("id")
+            if instance_id:
+                print(f"[LM Studio] Unloading currently loaded model '{loaded_name}' to make room for '{model}'...")
+                success, error = await self._unload_lmstudio_model(base_url, instance_id)
+                if not success:
+                    print(f"[LM Studio] Warning: Failed to unload '{loaded_name}': {error}")
+                    # Continue anyway, maybe loading will still work
+
         # Try to load the model
-        print(f"[LM Studio] Model '{model}' not loaded, attempting to load...")
+        print(f"[LM Studio] Loading model '{model}'...")
         success, error = await self._load_lmstudio_model(base_url, model)
 
         if not success:
             raise RuntimeError(
                 f"Failed to load model \"{model}\". Error: {error}"
             )
+
+        print(f"[LM Studio] Model '{model}' is now ready")
 
     async def _chat_lmstudio_v1(
         self,
