@@ -49,6 +49,7 @@ import {
   getEnhanceModels,
   getVideoUrl,
   type EnhanceProvider,
+  type EnhanceModelInfo,
 } from "@/lib/api";
 
 const defaultParams: GenerationParams = {
@@ -120,11 +121,25 @@ export function VideoGenerator() {
   const [enhanceProvider, setEnhanceProvider] = useState<EnhanceProvider>("ollama");
   const [enhanceBaseUrl, setEnhanceBaseUrl] = useState<string>("http://127.0.0.1:11434");
   const [enhanceModels, setEnhanceModels] = useState<string[]>([]);
+  const [enhanceModelDetails, setEnhanceModelDetails] = useState<EnhanceModelInfo[]>([]);
   const [enhanceModel, setEnhanceModel] = useState<string>("");
   const resolvedEnhanceModel = enhanceModels.includes(enhanceModel)
     ? enhanceModel
     : enhanceModels[0] || "";
   const [autoEnhance, setAutoEnhance] = useState(true);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+
+  // Helper to get display name for a model ID
+  const getModelDisplayName = (modelId: string): string => {
+    const detail = enhanceModelDetails.find((m) => m.id === modelId);
+    return detail?.display_name || modelId;
+  };
+
+  // Helper to get loaded state for a model ID
+  const getModelState = (modelId: string): "loaded" | "not-loaded" | null => {
+    const detail = enhanceModelDetails.find((m) => m.id === modelId);
+    return detail?.state || null;
+  };
 
   const setVideoPathSafe = useCallback((path?: string) => {
     if (!path) return;
@@ -336,20 +351,28 @@ export function VideoGenerator() {
     let cancelled = false;
     const loadModels = async () => {
       setEnhanceError(null);
+      setIsLoadingModels(true);
       const baseUrl = enhanceBaseUrl.trim() || enhanceDefaults[enhanceProvider];
       try {
         const result = await getEnhanceModels(enhanceProvider, baseUrl);
         if (cancelled) return;
         const models = result.models || [];
+        const details = result.model_details || [];
         setEnhanceModels(models);
+        setEnhanceModelDetails(details);
         if (models.length && !models.includes(enhanceModel)) {
           setEnhanceModel(models[0]);
         }
       } catch (e) {
         if (!cancelled) {
           setEnhanceModels([]);
+          setEnhanceModelDetails([]);
           setEnhanceModel("");
           setEnhanceError(e instanceof Error ? e.message : "Failed to load models");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingModels(false);
         }
       }
     };
@@ -613,23 +636,52 @@ export function VideoGenerator() {
                   <Select
                     value={resolvedEnhanceModel}
                     onValueChange={(val) => setEnhanceModel(val)}
-                    disabled={enhanceModels.length === 0}
+                    disabled={enhanceModels.length === 0 || isLoadingModels}
                   >
                     <SelectTrigger className="h-8 glass border-border/50 min-w-[200px]">
-                      <SelectValue
-                        placeholder={
-                          enhanceModels.length
-                            ? "Select model"
-                            : "No models found"
-                        }
-                      />
+                      {isLoadingModels ? (
+                        <span className="flex items-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Loading models...
+                        </span>
+                      ) : resolvedEnhanceModel ? (
+                        <span className="flex items-center gap-2 truncate">
+                          {getModelState(resolvedEnhanceModel) === "loaded" && (
+                            <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Loaded" />
+                          )}
+                          {getModelState(resolvedEnhanceModel) === "not-loaded" && (
+                            <span className="w-2 h-2 rounded-full bg-gray-400 shrink-0" title="Not loaded" />
+                          )}
+                          <span className="truncate">{getModelDisplayName(resolvedEnhanceModel)}</span>
+                        </span>
+                      ) : (
+                        <SelectValue
+                          placeholder={
+                            enhanceModels.length
+                              ? "Select model"
+                              : "No models found"
+                          }
+                        />
+                      )}
                     </SelectTrigger>
-                    <SelectContent className="glass-card border-border/50">
-                      {(enhanceModels.length ? enhanceModels : []).map((model) => (
-                        <SelectItem key={model} value={model} className="focus:bg-primary/10">
-                          {model}
-                        </SelectItem>
-                      ))}
+                    <SelectContent className="glass-card border-border/50 max-h-[300px]">
+                      {(enhanceModels.length ? enhanceModels : []).map((modelId) => {
+                        const state = getModelState(modelId);
+                        const displayName = getModelDisplayName(modelId);
+                        return (
+                          <SelectItem key={modelId} value={modelId} className="focus:bg-primary/10">
+                            <span className="flex items-center gap-2">
+                              {state === "loaded" && (
+                                <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Loaded" />
+                              )}
+                              {state === "not-loaded" && (
+                                <span className="w-2 h-2 rounded-full bg-gray-400 shrink-0" title="Not loaded" />
+                              )}
+                              <span className="truncate">{displayName}</span>
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
                     </SelectContent>
                   </Select>
 
@@ -639,7 +691,7 @@ export function VideoGenerator() {
                         size="sm"
                         className="h-8"
                         onClick={runEnhance}
-                        disabled={isEnhancing || !params.prompt.trim()}
+                        disabled={isEnhancing || !params.prompt.trim() || !resolvedEnhanceModel}
                       >
                         {isEnhancing ? (
                           <Loader2 className="h-4 w-4 animate-spin" />

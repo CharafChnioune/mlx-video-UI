@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import FileResponse, Response
 import asyncio
 import json
 from pathlib import Path
@@ -57,12 +57,22 @@ async def cancel_job(job_id: str):
     return {"message": "Job cancelled"}
 
 
-@router.get("/videos/{filename}")
-async def get_video(filename: str):
-    """Download a generated video."""
+@router.api_route("/videos/{filename}", methods=["GET", "HEAD"])
+async def get_video(request: Request, filename: str):
+    """Download a generated video (GET) or check availability (HEAD)."""
     video_path = video_generator.output_dir / filename
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if request.method == "HEAD":
+        stat = video_path.stat()
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Length": str(stat.st_size),
+                "Content-Type": "video/mp4",
+            },
+        )
 
     return FileResponse(
         path=str(video_path),

@@ -1,7 +1,7 @@
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ||
   (typeof window !== "undefined" && window.location.port === "3000"
-    ? `http://${window.location.hostname}:8000`
+    ? `http://${window.location.hostname}:8001`
     : "");
 
 // =====================
@@ -94,8 +94,17 @@ export interface EnhanceRequest {
   seed?: number;
 }
 
+export interface EnhanceModelInfo {
+  id: string;
+  display_name: string;
+  state: "loaded" | "not-loaded" | null;
+  type: "llm" | "embedding";
+  instance_id?: string;
+}
+
 export interface EnhanceModelsResponse {
   models: string[];
+  model_details?: EnhanceModelInfo[];
 }
 
 // =====================
@@ -547,7 +556,8 @@ export async function getEnhanceModels(
   if (baseUrl) params.set("base_url", baseUrl);
   const response = await fetch(`${API_BASE}/api/enhance/models?${params.toString()}`);
   if (!response.ok) {
-    return { models: [] };
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to load ${provider} models. Make sure ${provider === "ollama" ? "Ollama" : "LM Studio"} is running.`);
   }
   return response.json();
 }

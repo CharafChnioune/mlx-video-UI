@@ -61,6 +61,22 @@ const pipelines = [
 
 const models = [
   {
+    value: "Lightricks/LTX-2",
+    label: "LTX-2 BF16 (Official)",
+    size: "~65GB",
+    speed: "Slowest",
+    badge: "Highest Quality",
+    pipeline: "dev",
+  },
+  {
+    value: "Lightricks/LTX-2",
+    label: "LTX-2 BF16 (Official)",
+    size: "~65GB",
+    speed: "Slow",
+    badge: "Highest Quality",
+    pipeline: "distilled",
+  },
+  {
     value: "AITRADER/ltx2-distilled-4bit-mlx",
     label: "LTX-2 Distilled 4-bit",
     size: "~10GB",
@@ -124,6 +140,10 @@ export function ModelSelector({
       onModelRepoChange(filteredModels[0].value);
     }
   }, [filteredModels, modelRepo, onModelRepoChange]);
+
+  const selectedModel =
+    models.find((model) => model.value === modelRepo && model.pipeline === pipeline) ||
+    models.find((model) => model.value === modelRepo);
 
   return (
     <div className="space-y-6">
@@ -208,11 +228,11 @@ export function ModelSelector({
               {modelRepo && (
                 <div className="flex flex-col items-start">
                   <span className="font-medium text-sm">
-                    {models.find(m => m.value === modelRepo)?.label}
+                    {selectedModel?.label || modelRepo}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {models.find(m => m.value === modelRepo)?.size} &middot;{" "}
-                    {models.find(m => m.value === modelRepo)?.speed}
+                    {selectedModel?.size ? `${selectedModel.size} - ` : ""}
+                    {selectedModel?.speed || "Custom"}
                   </span>
                 </div>
               )}

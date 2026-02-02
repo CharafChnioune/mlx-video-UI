@@ -72,8 +72,18 @@ async def enhance_prompt(req: EnhanceRequest):
 async def list_enhance_models(
     provider: Literal["local", "ollama", "lmstudio"], base_url: Optional[str] = None
 ):
+    """List available models for prompt enhancement.
+
+    Returns model list with metadata:
+    - models: List of model IDs (for backward compatibility)
+    - model_details: List of full model objects with id, display_name, state, type
+    """
     try:
-        models = await prompt_enhancer.list_models(provider=provider, base_url=base_url)
-        return {"models": models}
+        model_details = await prompt_enhancer.list_models(provider=provider, base_url=base_url)
+        # Return both formats: simple list for backward compat, details for new UI
+        return {
+            "models": [m["id"] for m in model_details],
+            "model_details": model_details
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

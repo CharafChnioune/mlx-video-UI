@@ -12,11 +12,12 @@ class PromptEnhancerService:
     """
     Prompt enhancement service supporting local MLX, Ollama, and LM Studio backends.
 
-    LM Studio API Reference:
-    - REST API v0: /api/v0/models, /api/v0/chat/completions
-    - OpenAI compat: /v1/models, /v1/chat/completions (supports JIT model loading)
+    LM Studio API Reference (0.4.0+):
+    - REST API v1: /api/v1/models, /api/v1/chat
+    - REST API v0: /api/v0/models (legacy)
+    - OpenAI compat: /v1/models, /v1/chat/completions
 
-    See: https://lmstudio.ai/docs/developer/rest/endpoints
+    See: https://lmstudio.ai/docs/api/rest-api
     """
 
     def __init__(self) -> None:
@@ -149,18 +150,41 @@ class PromptEnhancerService:
         return await asyncio.to_thread(_do_request)
 
     def _extract_models(self, data: dict) -> list[dict]:
-        """Extract model list from various API response formats."""
+        """Extract model list from LM Studio v1 API response.
+
+        v1 API response format:
+        {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "lmstudio-community/qwen2.5-7b-instruct",
+                    "display_name": "Qwen 2.5 7B Instruct",
+                    "loaded_instances": [{"id": "...", "config": {...}}],
+                    ...
+                }
+            ]
+        }
+        """
+        # v1 API uses "models" array directly
         if isinstance(data, list):
             entries = data
         else:
-            entries = data.get("data") or data.get("models") or data.get("items") or []
+            entries = data.get("models") or data.get("data") or data.get("items") or []
+
         models = []
         for item in entries:
             if isinstance(item, str):
-                models.append({"id": item, "state": None})
+                models.append({
+                    "id": item,
+                    "display_name": item,
+                    "state": None,
+                    "type": "llm"
+                })
                 continue
+
+            # v1 API uses "key" as primary identifier
             model_id = (
-                item.get("key")
+                item.get("key")  # v1 API primary
                 or item.get("id")
                 or item.get("model")
                 or item.get("name")
@@ -169,16 +193,38 @@ class PromptEnhancerService:
             )
             if not model_id:
                 continue
-            state = item.get("state") or item.get("status")
-            instance_id = None
+
+            # Skip embedding models (only return LLMs)
+            model_type = item.get("type", "llm")
+            if model_type == "embedding":
+                continue
+
+            # Get display name (v1 API provides human-readable names)
+            display_name = item.get("display_name") or model_id
+
+            # Determine loaded state from loaded_instances
             loaded_instances = item.get("loaded_instances") or []
-            if loaded_instances:
-                state = "loaded"
-                if isinstance(loaded_instances, list) and loaded_instances:
-                    instance_id = loaded_instances[0].get("id")
-            if isinstance(item.get("loaded"), bool):
-                state = "loaded" if item.get("loaded") else "unloaded"
-            models.append({"id": model_id, "state": state, "instance_id": instance_id})
+            state = "loaded" if loaded_instances else "not-loaded"
+
+            # Fallback to explicit state/status fields
+            if not loaded_instances:
+                explicit_state = item.get("state") or item.get("status")
+                if explicit_state:
+                    state = explicit_state
+                elif isinstance(item.get("loaded"), bool):
+                    state = "loaded" if item.get("loaded") else "not-loaded"
+
+            instance_id = None
+            if isinstance(loaded_instances, list) and loaded_instances:
+                instance_id = loaded_instances[0].get("id")
+
+            models.append({
+                "id": model_id,
+                "display_name": display_name,
+                "state": state,
+                "type": model_type,
+                "instance_id": instance_id
+            })
         return models
 
     async def _list_lmstudio_models(self, base_url: str) -> list[dict]:
@@ -186,15 +232,17 @@ class PromptEnhancerService:
         List available models from LM Studio.
 
         Tries multiple endpoints in order:
-        1. /api/v0/models (REST API v0 - current)
-        2. /v1/models (OpenAI compat)
+        1. /api/v1/models (REST API v1 - LM Studio 0.4.0+)
+        2. /api/v0/models (REST API v0 - legacy)
+        3. /v1/models (OpenAI compat)
         """
         headers = self._auth_headers()
         last_error = None
 
-        # Try endpoints in order of preference
+        # Try endpoints in order of preference (v1 first for LM Studio 0.4.0+)
         endpoints = [
-            "/api/v0/models",  # LM Studio REST API v0
+            "/api/v1/models",  # LM Studio REST API v1 (0.4.0+)
+            "/api/v0/models",  # LM Studio REST API v0 (legacy)
             "/v1/models",      # OpenAI compatibility
         ]
 
@@ -208,19 +256,293 @@ class PromptEnhancerService:
 
         raise RuntimeError(last_error or "LM Studio not responding. Make sure LM Studio is running and the server is started (lms server start).")
 
-    async def list_models(self, provider: str, base_url: Optional[str] = None) -> List[str]:
-        """List available models for a given provider."""
+    def _parse_lmstudio_error(self, status: int, data: Optional[dict], body: str, model: str) -> str:
+        """Parse LM Studio error response into a user-friendly message."""
+        error_msg = "LM Studio request failed"
+
+        if data and isinstance(data, dict):
+            error_obj = data.get("error", {})
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get("message", error_msg)
+            elif isinstance(error_obj, str):
+                error_msg = error_obj
+
+        if "not defined" in error_msg.lower() or "utility process" in error_msg.lower():
+            return (
+                "LM Studio internal error. Please try:\n"
+                "1. Restart LM Studio\n"
+                "2. Load the model manually in LM Studio first\n"
+                "3. If the issue persists, restart your computer"
+            )
+        elif "not found" in error_msg.lower() or "not loaded" in error_msg.lower():
+            return f"Model '{model}' not found. Please load it in LM Studio first."
+        elif status == 0:
+            return "Cannot connect to LM Studio. Make sure LM Studio is running and the server is started."
+
+        return error_msg
+
+    async def _is_model_loaded(self, base_url: str, model: str) -> bool:
+        """Check if a model is currently loaded in LM Studio."""
+        try:
+            models = await self._list_lmstudio_models(base_url)
+            for m in models:
+                if m.get("id") == model and m.get("state") == "loaded":
+                    return True
+            return False
+        except Exception:
+            return False
+
+    async def _unload_lmstudio_model(self, base_url: str, instance_id: str, timeout: int = 30) -> tuple[bool, Optional[str]]:
+        """
+        Unload a model in LM Studio using the v1 API.
+
+        POST /api/v1/models/unload
+        Request: {"identifier": "instance-id"}
+        Response: {"success": true}
+
+        Args:
+            base_url: LM Studio base URL
+            instance_id: The instance_id of the loaded model to unload
+            timeout: Timeout in seconds
+
+        Returns:
+            Tuple of (success: bool, error_message: Optional[str])
+        """
+        headers = self._auth_headers()
+        payload = {"identifier": instance_id}
+
+        def _do_unload() -> tuple[int, Optional[dict], str]:
+            data = json.dumps(payload).encode("utf-8")
+            req_headers = {"Content-Type": "application/json", **headers}
+            req = urllib.request.Request(
+                base_url.rstrip("/") + "/api/v1/models/unload",
+                data=data,
+                headers=req_headers
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                    return resp.status, json.loads(body) if body else None, body
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+                try:
+                    parsed = json.loads(body) if body else None
+                except Exception:
+                    parsed = None
+                return exc.code, parsed, body
+            except urllib.error.URLError as exc:
+                return 0, None, f"Connection error: {exc.reason}"
+
+        status, data, body = await asyncio.to_thread(_do_unload)
+
+        if status in (200, 201):
+            print(f"[LM Studio] Model instance '{instance_id}' unloaded successfully")
+            return True, None
+
+        # Extract error message
+        error_msg = "Unknown error"
+        if data and isinstance(data, dict):
+            error_obj = data.get("error", {})
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get("message", error_msg)
+            elif isinstance(error_obj, str):
+                error_msg = error_obj
+        elif body:
+            error_msg = body[:200]
+
+        return False, error_msg
+
+    async def _get_loaded_models(self, base_url: str) -> list[dict]:
+        """Get all currently loaded models with their instance IDs."""
+        try:
+            models = await self._list_lmstudio_models(base_url)
+            return [m for m in models if m.get("state") == "loaded" and m.get("instance_id")]
+        except Exception:
+            return []
+
+    async def _load_lmstudio_model(self, base_url: str, model: str, timeout: int = 300) -> tuple[bool, Optional[str]]:
+        """
+        Load a model in LM Studio using the v1 API.
+
+        POST /api/v1/models/load
+        Request: {"model": "model-key"}
+        Response: {"type": "llm", "instance_id": "...", "status": "loaded"}
+
+        Args:
+            base_url: LM Studio base URL
+            model: Model key/identifier to load
+            timeout: Timeout in seconds for loading (default 5 minutes)
+
+        Returns:
+            Tuple of (success: bool, error_message: Optional[str])
+        """
+        headers = self._auth_headers()
+        payload = {"model": model}
+
+        # Use longer timeout for model loading (can take a while for large models)
+        def _do_load() -> tuple[int, Optional[dict], str]:
+            data = json.dumps(payload).encode("utf-8")
+            req_headers = {"Content-Type": "application/json", **headers}
+            req = urllib.request.Request(
+                base_url.rstrip("/") + "/api/v1/models/load",
+                data=data,
+                headers=req_headers
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                    return resp.status, json.loads(body) if body else None, body
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+                try:
+                    parsed = json.loads(body) if body else None
+                except Exception:
+                    parsed = None
+                return exc.code, parsed, body
+            except urllib.error.URLError as exc:
+                return 0, None, f"Connection error: {exc.reason}"
+
+        status, data, body = await asyncio.to_thread(_do_load)
+
+        if status in (200, 201):
+            load_status = data.get("status") if data else None
+            if load_status == "loaded":
+                print(f"[LM Studio] Model '{model}' loaded successfully")
+                return True, None
+            else:
+                return False, f"Unexpected status: {load_status}"
+
+        # Extract error message from response
+        error_msg = "Unknown error"
+        if data and isinstance(data, dict):
+            error_obj = data.get("error", {})
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get("message", error_msg)
+            elif isinstance(error_obj, str):
+                error_msg = error_obj
+        elif body:
+            error_msg = body[:200]
+
+        return False, error_msg
+
+    async def _ensure_model_loaded(self, base_url: str, model: str) -> None:
+        """
+        Ensure a model is loaded in LM Studio, loading it if necessary.
+
+        Raises RuntimeError if the model cannot be loaded.
+        """
+        # First check if already loaded
+        if await self._is_model_loaded(base_url, model):
+            return
+
+        # Try to load the model
+        print(f"[LM Studio] Model '{model}' not loaded, attempting to load...")
+        success, error = await self._load_lmstudio_model(base_url, model)
+
+        if not success:
+            raise RuntimeError(
+                f"Failed to load model \"{model}\". Error: {error}"
+            )
+
+    async def _chat_lmstudio_v1(
+        self,
+        base_url: str,
+        model: str,
+        user_prompt: str,
+        system_prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Chat using LM Studio native v1 API with fallback to OpenAI compat.
+
+        LM Studio v1 API (/api/v1/chat):
+        - Request: {model, input, system_prompt, temperature, max_output_tokens, stream}
+        - Response: {output: [{type: "message", content: "..."}], stats: {...}}
+
+        Falls back to OpenAI compat (/v1/chat/completions) if v1 fails.
+        Auto-loads the model if not already loaded.
+        """
+        # Ensure model is loaded before making chat request
+        await self._ensure_model_loaded(base_url, model)
+
+        headers = self._auth_headers()
+
+        # Try native v1 API first (LM Studio 0.4.0+)
+        v1_payload = {
+            "model": model,
+            "input": user_prompt,
+            "system_prompt": system_prompt,
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+            "stream": False,
+        }
+
+        status, data, body = await self._fetch_json_with_status(
+            base_url.rstrip("/") + "/api/v1/chat", v1_payload, headers=headers
+        )
+
+        if status in (200, 201):
+            # v1 API returns output array
+            output = data.get("output") or []
+            for item in output:
+                if item.get("type") == "message":
+                    return (item.get("content") or "").strip()
+            return ""
+
+        # Fallback to OpenAI compat endpoint
+        openai_payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        status, data, body = await self._fetch_json_with_status(
+            base_url.rstrip("/") + "/v1/chat/completions", openai_payload, headers=headers
+        )
+
+        if status in (200, 201):
+            choices = data.get("choices") or []
+            if choices and choices[0].get("message"):
+                return (choices[0]["message"].get("content") or "").strip()
+            return ""
+
+        # Handle errors
+        raise RuntimeError(self._parse_lmstudio_error(status, data, body, model))
+
+    async def list_models(self, provider: str, base_url: Optional[str] = None) -> List[dict]:
+        """List available models for a given provider.
+
+        Returns a list of model dictionaries with:
+        - id: Model identifier to use in API calls
+        - display_name: Human-readable name for UI display
+        - state: 'loaded' | 'not-loaded' | None
+        - type: 'llm' | 'embedding' (LM Studio v1 only)
+        """
         if provider == "local":
-            return ["bundled"]
+            return [{"id": "bundled", "display_name": "Bundled MLX Model", "state": None, "type": "llm"}]
         if provider == "ollama":
             url = (base_url or self._default_ollama).rstrip("/") + "/api/tags"
             data = await self._fetch_json(url)
-            return [m.get("name") for m in data.get("models", []) if m.get("name")]
+            models = []
+            for m in data.get("models", []):
+                name = m.get("name")
+                if name:
+                    models.append({
+                        "id": name,
+                        "display_name": name,
+                        "state": None,
+                        "type": "llm"
+                    })
+            return models
         if provider == "lmstudio":
-            models = await self._list_lmstudio_models(
+            return await self._list_lmstudio_models(
                 self._normalize_lmstudio_base(base_url or self._default_lmstudio)
             )
-            return [m["id"] for m in models if m.get("id")]
         return []
 
     async def _enhance_with_prompts(
@@ -319,50 +641,15 @@ class PromptEnhancerService:
                 raise RuntimeError("Select an LM Studio model")
 
             lm_base = self._normalize_lmstudio_base(base_url or self._default_lmstudio)
-            headers = self._auth_headers()
-
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stream": False,
-            }
-
-            status, data, body = await self._fetch_json_with_status(
-                lm_base + "/v1/chat/completions", payload, headers=headers
+            result = await self._chat_lmstudio_v1(
+                base_url=lm_base,
+                model=model,
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
-
-            if status in (200, 201):
-                choices = data.get("choices") or []
-                if choices and choices[0].get("message"):
-                    return (choices[0]["message"].get("content") or "").strip()
-                return ""
-
-            error_msg = "LM Studio request failed"
-            if data and isinstance(data, dict):
-                error_obj = data.get("error", {})
-                if isinstance(error_obj, dict):
-                    error_msg = error_obj.get("message", error_msg)
-                elif isinstance(error_obj, str):
-                    error_msg = error_obj
-
-            if "not defined" in error_msg.lower() or "utility process" in error_msg.lower():
-                error_msg = (
-                    "LM Studio internal error. Please try:\n"
-                    "1. Restart LM Studio\n"
-                    "2. Load the model manually in LM Studio first\n"
-                    "3. If the issue persists, restart your computer"
-                )
-            elif "not found" in error_msg.lower() or "not loaded" in error_msg.lower():
-                error_msg = f"Model '{model}' not found. Please load it in LM Studio first."
-            elif status == 0:
-                error_msg = "Cannot connect to LM Studio. Make sure LM Studio is running and the server is started."
-
-            raise RuntimeError(error_msg)
+            return result
 
         raise RuntimeError("Unknown provider")
 
