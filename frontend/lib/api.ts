@@ -28,6 +28,7 @@ export interface GenerationParams {
   tiling?: "auto" | "none" | "default" | "aggressive" | "conservative" | "spatial" | "temporal";
   cache_limit_gb?: number;
   memory_limit_gb?: number;
+  eval_interval?: number;
   audio?: boolean;
   stream?: boolean;
   mem_log?: boolean;

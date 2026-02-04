@@ -118,6 +118,8 @@ class VideoGeneratorService:
             cmd.extend(["--cache-limit-gb", str(request.cache_limit_gb)])
         if request.memory_limit_gb is not None:
             cmd.extend(["--memory-limit-gb", str(request.memory_limit_gb)])
+        if request.eval_interval:
+            cmd.extend(["--eval-interval", str(request.eval_interval)])
         if request.mem_log:
             cmd.append("--mem-log")
         if request.clear_cache:

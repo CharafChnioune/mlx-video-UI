@@ -111,6 +111,7 @@ def recommended_defaults() -> Dict[str, Any]:
         "seed": 42,
         "tiling": "auto",
         "cache_limit_gb": cache_limit,
+        "eval_interval": 2,
         "audio": True,
         "stream": True,
     }

@@ -50,6 +50,7 @@ class GenerationRequest(BaseModel):
     tiling: TilingMode = Field(TilingMode.AUTO, description="Tiling mode")
     cache_limit_gb: Optional[float] = Field(None, ge=1, le=512, description="Cache limit in GB")
     memory_limit_gb: Optional[float] = Field(None, ge=1, le=1024, description="Memory limit in GB")
+    eval_interval: int = Field(2, ge=1, le=1000, description="Evaluate latents every N steps")
     audio: bool = Field(False, description="Enable audio generation")
     stream: bool = Field(False, description="Stream output")
     mem_log: bool = Field(False, description="Enable memory logging")
