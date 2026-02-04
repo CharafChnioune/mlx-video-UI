@@ -69,6 +69,7 @@ const defaultParams: GenerationParams = {
   tiling: "auto",
   cache_limit_gb: 32,
   memory_limit_gb: undefined,
+  eval_interval: 2,
   audio: true,
   stream: true,
   mem_log: false,

@@ -437,6 +437,28 @@ export function ParameterPanel({ params, onParamsChange }: ParameterPanelProps) 
 
           <div className="space-y-3 p-4 rounded-xl glass border border-border/50">
             <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">Eval Interval</Label>
+              <span className="text-xs font-mono text-primary px-2 py-0.5 rounded bg-primary/10">
+                {params.eval_interval || 2}
+              </span>
+            </div>
+            <div className="slider-glow">
+              <Slider
+                value={[params.eval_interval || 2]}
+                onValueChange={([v]) => onParamsChange({ eval_interval: v })}
+                min={1}
+                max={8}
+                step={1}
+                className="w-full"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Evaluate latents every N steps (2 recommended).
+            </p>
+          </div>
+
+          <div className="space-y-3 p-4 rounded-xl glass border border-border/50">
+            <div className="flex items-center justify-between">
               <Label className="text-xs text-muted-foreground">Hard Memory Limit (GB)</Label>
               <span className="text-xs font-mono text-primary px-2 py-0.5 rounded bg-primary/10">{params.memory_limit_gb || 0}GB</span>
             </div>
