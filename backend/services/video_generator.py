@@ -3,6 +3,7 @@ import sys
 import uuid
 import os
 import json
+import time
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
@@ -13,6 +14,9 @@ import subprocess
 from models.schemas import GenerationRequest, JobStatus, LoraSpec
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+
 @dataclass
 class Job:
     id: str
@@ -20,12 +24,16 @@ class Job:
     request: GenerationRequest
     progress: float = 0.0
     current_step: str = ""
+    eta: Optional[str] = None
     download_progress: float = 0.0
     download_step: str = ""
     preview_path: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
     process: Optional[asyncio.subprocess.Process] = None
+    started_at: Optional[float] = None
+    last_progress_ts: Optional[float] = None
+    progress_rate_ema: Optional[float] = None
 
 
 class VideoGeneratorService:
@@ -86,6 +94,7 @@ class VideoGeneratorService:
         fps_int = int(round(float(request.fps)))
         cmd = [
             self._python_cmd, "-m", "mlx_video.generate",
+            "--verbose",
             "--prompt", request.prompt,
             "--height", str(request.height),
             "--width", str(request.width),
@@ -177,36 +186,69 @@ class VideoGeneratorService:
             return None, "Downloading model weights..."
         return None, None
 
-    def _parse_generation_progress(self, line: str) -> tuple[Optional[float], Optional[str]]:
-        """Parse generation progress from mlx-video output."""
-        lowered = line.lower()
-        if "fetching" in lowered or ("downloading" in lowered and "model" in lowered):
-            return None, None
-        # Look for progress patterns like "Step 10/40" or percentage
-        step_match = re.search(r'(?:Step|step)\s+(\d+)\s*/\s*(\d+)', line)
-        if step_match:
-            current, total = int(step_match.group(1)), int(step_match.group(2))
-            progress = (current / total) * 100
-            return progress, f"Step {current}/{total}"
+    def _strip_ansi(self, text: str) -> str:
+        return ANSI_ESCAPE_RE.sub("", text)
 
-        # Look for percentage patterns
-        pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', line)
-        if pct_match:
-            return float(pct_match.group(1)), None
+    def _format_eta(self, seconds: float) -> str:
+        seconds = max(0, int(round(seconds)))
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
 
-        # Look for stage indicators
-        if "loading" in lowered:
-            return None, "Loading model..."
-        if "encoding" in lowered:
-            return None, "Encoding prompt..."
-        if "generating" in lowered or "sampling" in lowered:
-            return None, "Generating frames..."
-        if "decoding video" in lowered or "streaming frames" in lowered:
-            return None, "Decoding video..."
+    def _parse_stage_progress(self, line: str) -> tuple[Optional[str], Optional[float], Optional[str]]:
+        """
+        Parse progress signals from mlx-video output.
+
+        Returns: (stage, stage_pct, label)
+          - stage: one of {"init","sample","decode","save"} or None
+          - stage_pct: 0..100 within that stage (optional)
+          - label: human readable status (optional)
+        """
+        clean = self._strip_ansi(line).strip()
+        lowered = clean.lower()
+
+        # Ignore HF/tqdm download lines in the generation progress channel.
+        if lowered.startswith(("fetching", "downloading")):
+            return None, None, None
+        if "downloading (" in lowered or "fetching " in lowered:
+            return None, None, None
+
+        # Init-ish markers
+        if "loading" in lowered and "model" in lowered:
+            return "init", None, "Loading model..."
+        if "text encoder loaded" in lowered or "encoding" in lowered:
+            return "init", None, "Encoding prompt..."
+
+        # Sampling / denoising (rich Progress emits "Denoising ... 12/40")
+        if "denois" in lowered:
+            m = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+            if m:
+                cur, total = int(m.group(1)), int(m.group(2))
+                pct = (cur / max(1, total)) * 100.0
+                return "sample", pct, f"Denoising {cur}/{total}"
+            return "sample", None, "Denoising..."
+
+        # Decode / stream (rich Progress emits "Streaming frames ... 123/721")
+        if "streaming frames" in lowered:
+            m = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+            if m:
+                cur, total = int(m.group(1)), int(m.group(2))
+                pct = (cur / max(1, total)) * 100.0
+                return "decode", pct, f"Decoding frames {cur}/{total}"
+            return "decode", None, "Decoding frames..."
+
+        if "decoding video" in lowered:
+            return "decode", None, "Decoding video..."
+
+        # Save / finalize
         if "saving" in lowered or "writing" in lowered:
-            return None, "Saving video..."
+            return "save", None, "Saving video..."
+        if "saved video with audio to" in lowered or ("saved video to" in lowered and "saved audio to" not in lowered):
+            return "save", 100.0, "Saving video..."
 
-        return None, None
+        return None, None, None
 
     async def start_generation(self, request: GenerationRequest) -> str:
         """Start a video generation job."""
@@ -246,6 +288,7 @@ class VideoGeneratorService:
                 "job_id": job_id,
                 "progress": 0,
                 "current_step": "Starting generation...",
+                "eta": job.eta,
                 "download_progress": job.download_progress,
                 "download_step": job.download_step,
                 "preview_path": job.preview_path,
@@ -282,6 +325,12 @@ class VideoGeneratorService:
                 env={
                     **os.environ,
                     "PYTHONUNBUFFERED": "1",
+                    # Live preview image updated during streaming decode. The UI polls this while
+                    # generation runs (more reliable than trying to play a half-written MP4).
+                    "MLX_VIDEO_PREVIEW_PATH": str(self.output_dir / f"preview_{job_id}.jpg"),
+                    "MLX_VIDEO_PREVIEW_EVERY": os.environ.get("MLX_VIDEO_PREVIEW_EVERY", "12"),
+                    "MLX_VIDEO_PREVIEW_MAX_DIM": os.environ.get("MLX_VIDEO_PREVIEW_MAX_DIM", "512"),
+                    "MLX_VIDEO_PREVIEW_QUALITY": os.environ.get("MLX_VIDEO_PREVIEW_QUALITY", "85"),
                     "PYTHONPATH": os.pathsep.join(
                         [
                             str(repo_path),
@@ -292,115 +341,159 @@ class VideoGeneratorService:
             )
             job.process = process
 
-            # Read output line by line
-            last_progress = 0.0
+            # Read output stream; split on both newline and carriage return so we
+            # can capture Rich Progress updates (which frequently use "\r").
+            job.started_at = time.monotonic()
             pending_output_context: Optional[str] = None
             pending_output_buffer = ""
             pending_output_label = ""
-            stage_floor = {
-                "Loading model...": 5.0,
-                "Encoding prompt...": 10.0,
-                "Generating frames...": 20.0,
-                "Decoding video...": 85.0,
-                "Saving video...": 95.0,
+            stage_ranges = {
+                "init": (0.0, 10.0),
+                "sample": (10.0, 85.0),
+                "decode": (85.0, 95.0),
+                "save": (95.0, 99.0),
             }
 
+            def stage_to_overall(stage: str, pct: Optional[float]) -> float:
+                start, end = stage_ranges.get(stage, (0.0, 100.0))
+                if pct is None:
+                    return start
+                return start + (float(pct) / 100.0) * (end - start)
+
+            buf = ""
             while True:
-                line = await process.stdout.readline()
-                if not line:
+                chunk = await process.stdout.read(4096)
+                if not chunk:
                     break
+                buf += chunk.decode("utf-8", errors="ignore")
 
-                line_str = line.decode('utf-8', errors='ignore').strip()
-                if not line_str:
-                    continue
+                parts = re.split(r"[\r\n]+", buf)
+                buf = parts.pop()  # keep any unterminated partial line
 
-                print(f"[mlx-video] {line_str}", flush=True)
+                for raw_line in parts:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
 
-                download_progress, download_step = self._parse_download_progress(line_str)
-                if download_step:
-                    job.download_step = download_step
-                if download_progress is not None:
-                    job.download_progress = min(100.0, max(0.0, download_progress))
-                    if job.download_progress >= 100:
-                        job.download_step = "Download complete"
+                    line_str = self._strip_ansi(raw_line).strip()
+                    if not line_str:
+                        continue
 
-                progress, step = self._parse_generation_progress(line_str)
-                if progress is not None:
-                    last_progress = progress
-                    job.progress = max(job.progress, min(100.0, progress))
-                if step:
-                    job.current_step = step
-                    floor = stage_floor.get(step)
-                    if floor is not None:
-                        job.progress = max(job.progress, floor)
+                    print(f"[mlx-video] {line_str}", flush=True)
 
-                pending_output_armed = False
+                    download_progress, download_step = self._parse_download_progress(line_str)
+                    if download_step:
+                        job.download_step = download_step
+                    if download_progress is not None:
+                        job.download_progress = min(100.0, max(0.0, download_progress))
+                        if job.download_progress >= 100:
+                            job.download_step = "Download complete"
 
-                def arm_output_capture(label: str, remainder: str):
-                    nonlocal pending_output_context, pending_output_buffer, pending_output_label, pending_output_armed
-                    pending_output_context = label
-                    pending_output_label = label
-                    pending_output_buffer = remainder.strip()
-                    pending_output_armed = True
+                    prev_progress = job.progress
+                    stage, stage_pct, label = self._parse_stage_progress(line_str)
+                    if label:
+                        job.current_step = label
+                    if stage:
+                        overall = stage_to_overall(stage, stage_pct)
+                        job.progress = max(job.progress, min(100.0, overall))
 
-                def finalize_output_capture():
-                    nonlocal pending_output_context, pending_output_buffer, pending_output_label
-                    path_str = pending_output_buffer.strip()
-                    if not path_str:
+                        # Expose the streamed temp path as soon as decoding begins.
+                        if (
+                            stage == "decode"
+                            and job.request.stream
+                            and job.request.audio
+                            and not auto_output_name
+                            and not job.preview_path
+                        ):
+                            try:
+                                job.preview_path = str(Path(output_path).with_suffix(".temp.mp4"))
+                            except Exception:
+                                pass
+
+                    # ETA (based on overall progress slope; stable enough once sampling starts).
+                    if job.progress > prev_progress + 0.01:
+                        now = time.monotonic()
+                        if job.last_progress_ts is not None:
+                            dt = now - job.last_progress_ts
+                            if dt > 0:
+                                rate = (job.progress - prev_progress) / dt  # pct/sec
+                                if job.progress_rate_ema is None:
+                                    job.progress_rate_ema = rate
+                                else:
+                                    job.progress_rate_ema = (job.progress_rate_ema * 0.85) + (rate * 0.15)
+
+                                if job.progress >= 10.0 and job.progress_rate_ema and job.progress_rate_ema > 1e-3:
+                                    job.eta = self._format_eta((100.0 - job.progress) / job.progress_rate_ema)
+                        job.last_progress_ts = now
+
+                    pending_output_armed = False
+
+                    def arm_output_capture(label: str, remainder: str):
+                        nonlocal pending_output_context, pending_output_buffer, pending_output_label, pending_output_armed
+                        pending_output_context = label
+                        pending_output_label = label
+                        pending_output_buffer = remainder.strip()
+                        pending_output_armed = True
+
+                    def finalize_output_capture():
+                        nonlocal pending_output_context, pending_output_buffer, pending_output_label
+                        path_str = pending_output_buffer.strip()
+                        if not path_str:
+                            pending_output_context = None
+                            pending_output_buffer = ""
+                            return
+                        path = Path(path_str)
+                        if path.exists():
+                            # When streaming with audio enabled, mlx-video writes a temporary
+                            # ".temp.mp4" first (video-only), then muxes audio into the final mp4.
+                            if pending_output_label == "stream" and job.request.audio and path.name.endswith(".temp.mp4"):
+                                job.preview_path = str(path)
+                                self._debug(f"{pending_output_label}: detected preview_path={job.preview_path}")
+                            else:
+                                job.output_path = str(path)
+                                self._debug(f"{pending_output_label}: detected output_path={job.output_path}")
+                        else:
+                            self._debug(f"{pending_output_label}: path not found: {path_str}")
                         pending_output_context = None
                         pending_output_buffer = ""
-                        return
-                    path = Path(path_str)
-                    if path.exists():
-                        # When streaming with audio enabled, mlx-video writes a temporary
-                        # ".temp.mp4" first (video-only), then muxes audio into the final mp4.
-                        if pending_output_label == "stream" and job.request.audio and path.name.endswith(".temp.mp4"):
-                            job.preview_path = str(path)
-                            self._debug(f"{pending_output_label}: detected preview_path={job.preview_path}")
-                        else:
-                            job.output_path = str(path)
-                            self._debug(f"{pending_output_label}: detected output_path={job.output_path}")
-                    else:
-                        self._debug(f"{pending_output_label}: path not found: {path_str}")
-                    pending_output_context = None
-                    pending_output_buffer = ""
 
-                if "Streamed video to" in line_str:
-                    remainder = line_str.split("Streamed video to", 1)[1].strip()
-                    arm_output_capture("stream", remainder)
-                    if ".mp4" in pending_output_buffer:
-                        finalize_output_capture()
+                    if "Streamed video to" in line_str:
+                        remainder = line_str.split("Streamed video to", 1)[1].strip()
+                        arm_output_capture("stream", remainder)
+                        if ".mp4" in pending_output_buffer:
+                            finalize_output_capture()
 
-                if "Saved video with audio to" in line_str:
-                    remainder = line_str.split("Saved video with audio to", 1)[1].strip()
-                    arm_output_capture("final_with_audio", remainder)
-                    if ".mp4" in pending_output_buffer:
-                        finalize_output_capture()
+                    if "Saved video with audio to" in line_str:
+                        remainder = line_str.split("Saved video with audio to", 1)[1].strip()
+                        arm_output_capture("final_with_audio", remainder)
+                        if ".mp4" in pending_output_buffer:
+                            finalize_output_capture()
 
-                if "Saved video to" in line_str and "Saved video with audio to" not in line_str:
-                    remainder = line_str.split("Saved video to", 1)[1].strip()
-                    arm_output_capture("final", remainder)
-                    if ".mp4" in pending_output_buffer:
-                        finalize_output_capture()
+                    if "Saved video to" in line_str and "Saved video with audio to" not in line_str:
+                        remainder = line_str.split("Saved video to", 1)[1].strip()
+                        arm_output_capture("final", remainder)
+                        if ".mp4" in pending_output_buffer:
+                            finalize_output_capture()
 
-                if "Saved audio to" in line_str:
-                    self._debug(f"audio: {line_str}")
+                    if "Saved audio to" in line_str:
+                        self._debug(f"audio: {line_str}")
 
-                if pending_output_context and not pending_output_armed:
-                    pending_output_buffer = f"{pending_output_buffer}{line_str}".strip()
-                    if ".mp4" in pending_output_buffer:
-                        finalize_output_capture()
+                    if pending_output_context and not pending_output_armed:
+                        pending_output_buffer = f"{pending_output_buffer}{line_str}".strip()
+                        if ".mp4" in pending_output_buffer:
+                            finalize_output_capture()
 
-                await self._notify_progress(job_id, {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "progress": job.progress,
-                    "current_step": job.current_step,
-                    "download_progress": job.download_progress,
-                    "download_step": job.download_step,
-                    "preview_path": job.preview_path,
-                    "output_path": job.output_path,
-                })
+                    await self._notify_progress(job_id, {
+                        "type": "progress",
+                        "job_id": job_id,
+                        "progress": job.progress,
+                        "current_step": job.current_step,
+                        "eta": job.eta,
+                        "download_progress": job.download_progress,
+                        "download_step": job.download_step,
+                        "preview_path": job.preview_path,
+                        "output_path": job.output_path,
+                    })
 
             # Wait for process to complete
             await process.wait()
@@ -497,7 +590,8 @@ class VideoGeneratorService:
                     "job_id": job_id,
                     "progress": 100,
                     "preview_path": job.preview_path,
-                    "output_path": str(final_output)
+                    "output_path": str(final_output),
+                    "eta": job.eta,
                 })
             else:
                 job.status = JobStatus.ERROR
@@ -506,7 +600,8 @@ class VideoGeneratorService:
                 await self._notify_progress(job_id, {
                     "type": "error",
                     "job_id": job_id,
-                    "error": job.error
+                    "error": job.error,
+                    "eta": job.eta,
                 })
 
         except Exception as e:
@@ -516,7 +611,8 @@ class VideoGeneratorService:
             await self._notify_progress(job_id, {
                 "type": "error",
                 "job_id": job_id,
-                "error": str(e)
+                "error": str(e),
+                "eta": job.eta,
             })
 
     def get_job(self, job_id: str) -> Optional[Job]:

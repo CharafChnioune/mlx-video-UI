@@ -72,30 +72,24 @@ def recommended_defaults() -> Dict[str, Any]:
     hw = get_hardware_info()
     mem = hw["memory_gb"] or 0.0
 
+    # Speed-first defaults: generate a reasonable preview quickly, then let the user
+    # dial up resolution/frames/steps once the pipeline is confirmed working.
+    #
+    # We intentionally prefer the distilled 4-bit model by default to reduce download
+    # size and RAM pressure, even on high-memory machines.
+    model = "AITRADER/ltx2-distilled-4bit-mlx"
+    pipeline = "distilled"
+    steps = 8
+    cfg = 4.0
+
     if mem >= 64:
-        model = "AITRADER/ltx2-dev-8bit-mlx"
-        pipeline = "dev"
-        width, height = 1024, 576
-        steps = 30
-        cfg = 4.5
-    elif mem >= 48:
-        model = "AITRADER/ltx2-dev-4bit-mlx"
-        pipeline = "dev"
         width, height = 832, 480
-        steps = 25
-        cfg = 4.5
+    elif mem >= 48:
+        width, height = 832, 480
     elif mem >= 32:
-        model = "AITRADER/ltx2-distilled-8bit-mlx"
-        pipeline = "distilled"
-        width, height = 832, 512
-        steps = 8
-        cfg = 4.0
-    else:
-        model = "AITRADER/ltx2-distilled-4bit-mlx"
-        pipeline = "distilled"
         width, height = 704, 448
-        steps = 8
-        cfg = 4.0
+    else:
+        width, height = 640, 384
 
     cache_limit = max(8, int(mem * 0.6)) if mem else None
 

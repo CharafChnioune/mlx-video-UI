@@ -44,6 +44,7 @@ import {
   getDefaultSettings,
   getHardwareInfo,
   type HardwareInfo,
+  type DefaultSettings,
   enhancePrompt,
   getJobStatus,
   getEnhanceModels,
@@ -106,8 +107,10 @@ export function VideoGenerator() {
   const [status, setStatus] = useState<
     "idle" | "pending" | "processing" | "completed" | "error"
   >("idle");
+  const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState("");
+  const [eta, setEta] = useState<string | undefined>();
   const [downloadProgress, setDownloadProgress] = useState<number | undefined>();
   const [downloadStep, setDownloadStep] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -116,6 +119,7 @@ export function VideoGenerator() {
   const [history, setHistory] = useState<GenerationHistory[]>([]);
   const [activeTab, setActiveTab] = useState("parameters");
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
+  const [defaultSettings, setDefaultSettings] = useState<DefaultSettings | null>(null);
   const [defaultsApplied, setDefaultsApplied] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
@@ -289,6 +293,7 @@ export function VideoGenerator() {
     const loadDefaults = async () => {
       try {
         const defaults = await getDefaultSettings();
+        setDefaultSettings(defaults);
         const hw = await getHardwareInfo();
         setHardware(hw);
         const saved = localStorage.getItem(STORAGE_KEY);
@@ -407,11 +412,13 @@ export function VideoGenerator() {
     const resumeLastJob = async () => {
       const lastJob = localStorage.getItem(LAST_JOB_KEY);
       if (!lastJob) return;
+      setJobId(lastJob);
       try {
         const status = await getJobStatus(lastJob);
         setStatus(status.status);
         setProgress(status.progress || 0);
         setCurrentStep(status.current_step || "");
+        setEta(status.eta);
         setDownloadProgress(status.download_progress);
         setDownloadStep(status.download_step);
         setError(status.error);
@@ -429,6 +436,7 @@ export function VideoGenerator() {
                 setStatus("processing");
                 setProgress(update.progress || 0);
                 setCurrentStep(update.current_step || "Processing...");
+                setEta(update.eta);
                 if (update.download_progress !== undefined) {
                   setDownloadProgress(update.download_progress);
                 }
@@ -441,6 +449,7 @@ export function VideoGenerator() {
                 setStatus("completed");
                 setProgress(100);
                 setVideoPathSafe(update.output_path);
+                setEta(undefined);
                 if (update.download_progress !== undefined) {
                   setDownloadProgress(update.download_progress);
                 }
@@ -451,6 +460,7 @@ export function VideoGenerator() {
               } else if (update.type === "error") {
                 setStatus("error");
                 setError(update.error);
+                setEta(undefined);
                 if (update.download_progress !== undefined) {
                   setDownloadProgress(update.download_progress);
                 }
@@ -466,6 +476,7 @@ export function VideoGenerator() {
         }
       } catch {
         localStorage.removeItem(LAST_JOB_KEY);
+        setJobId(null);
       }
     };
     resumeLastJob();
@@ -477,6 +488,7 @@ export function VideoGenerator() {
     setStatus("pending");
     setProgress(0);
     setCurrentStep("Starting generation...");
+    setEta(undefined);
     setDownloadProgress(undefined);
     setDownloadStep(undefined);
     setError(undefined);
@@ -506,6 +518,7 @@ export function VideoGenerator() {
       }
 
       const job = await startGeneration(generationParams);
+      setJobId(job.job_id);
       try {
         localStorage.setItem(LAST_JOB_KEY, job.job_id);
       } catch {
@@ -519,6 +532,7 @@ export function VideoGenerator() {
             setStatus("processing");
             setProgress(update.progress || 0);
             setCurrentStep(update.current_step || "Processing...");
+            setEta(update.eta);
             if (update.download_progress !== undefined) {
               setDownloadProgress(update.download_progress);
             }
@@ -531,6 +545,7 @@ export function VideoGenerator() {
             setStatus("completed");
             setProgress(100);
             setVideoPathSafe(update.output_path);
+            setEta(undefined);
             if (update.download_progress !== undefined) {
               setDownloadProgress(update.download_progress);
             }
@@ -556,6 +571,7 @@ export function VideoGenerator() {
           } else if (update.type === "error") {
             setStatus("error");
             setError(update.error);
+            setEta(undefined);
             if (update.download_progress !== undefined) {
               setDownloadProgress(update.download_progress);
             }
@@ -602,6 +618,7 @@ export function VideoGenerator() {
   };
 
   const isGenerating = status === "processing" || status === "pending";
+  const previewImage = isGenerating && jobId ? `preview_${jobId}.jpg` : undefined;
   const missingVideo = params.pipeline === "ic_lora" && !params.video_conditioning;
   const missingImage = params.pipeline === "keyframe" && !params.conditioning_image;
   const canGenerate =
@@ -778,7 +795,7 @@ export function VideoGenerator() {
 
         {hardware && (
           <Card className="glass-card border-border/50">
-            <CardContent className="p-4 text-xs text-muted-foreground space-y-1">
+            <CardContent className="p-4 text-xs text-muted-foreground space-y-2">
               <div className="flex items-center justify-between">
                 <span>Hardware</span>
                 <span className="font-medium text-foreground">{hardware.cpu}</span>
@@ -791,6 +808,29 @@ export function VideoGenerator() {
                 <span>MLX</span>
                 <span className="font-medium text-foreground">{hardware.mlx_version || "unknown"}</span>
               </div>
+              {defaultSettings?.generation && (
+                <div className="pt-2 border-t border-border/50 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Recommended</span>
+                    <span className="font-mono text-foreground">
+                      {defaultSettings.generation.width ?? params.width}x{defaultSettings.generation.height ?? params.height} • {defaultSettings.generation.num_frames ?? params.num_frames}f
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      if (!defaultSettings) return;
+                      setParams((prev) => sanitizeParams({ ...prev, ...defaultSettings.generation }));
+                      setDefaultsApplied(true);
+                    }}
+                  >
+                    Apply recommended settings
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -914,6 +954,7 @@ export function VideoGenerator() {
             <VideoPreview
               videoPath={videoPath}
               isGenerating={isGenerating}
+              previewImage={previewImage}
             />
           </CardContent>
         </Card>
@@ -923,6 +964,7 @@ export function VideoGenerator() {
             status={status}
             progress={progress}
             currentStep={currentStep}
+            eta={eta}
             error={error}
             downloadProgress={downloadProgress}
             downloadStep={downloadStep}

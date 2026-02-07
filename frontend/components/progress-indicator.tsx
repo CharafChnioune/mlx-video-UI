@@ -5,6 +5,7 @@ interface ProgressIndicatorProps {
   status: "idle" | "pending" | "processing" | "completed" | "error";
   progress: number;
   currentStep?: string;
+  eta?: string;
   downloadProgress?: number;
   downloadStep?: string;
   error?: string;
@@ -12,15 +13,16 @@ interface ProgressIndicatorProps {
 
 const steps = [
   { icon: Zap, label: "Initializing", threshold: 0 },
-  { icon: Sparkles, label: "Processing", threshold: 10 },
-  { icon: Film, label: "Generating frames", threshold: 30 },
-  { icon: Download, label: "Finalizing", threshold: 90 },
+  { icon: Sparkles, label: "Denoising", threshold: 10 },
+  { icon: Film, label: "Decoding", threshold: 85 },
+  { icon: Download, label: "Finalizing", threshold: 95 },
 ];
 
 export function ProgressIndicator({
   status,
   progress,
   currentStep,
+  eta,
   downloadProgress,
   downloadStep,
   error,
@@ -80,7 +82,10 @@ export function ProgressIndicator({
             </div>
             <div>
               <span className="text-sm font-semibold">Generating video</span>
-              <p className="text-xs text-muted-foreground">{currentStep || "Processing..."}</p>
+              <p className="text-xs text-muted-foreground">
+                {currentStep || "Processing..."}
+                {eta ? ` • ETA ${eta}` : ""}
+              </p>
             </div>
           </>
         )}

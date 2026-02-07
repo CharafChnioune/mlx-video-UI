@@ -48,6 +48,7 @@ export interface GenerationJob {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  eta?: string;
   download_progress?: number;
   download_step?: string;
   preview_path?: string;
@@ -60,6 +61,7 @@ export interface ProgressUpdate {
   job_id: string;
   progress?: number;
   current_step?: string;
+  eta?: string;
   download_progress?: number;
   download_step?: string;
   preview_path?: string;
@@ -72,6 +74,7 @@ export interface JobStatusResponse {
   status: "pending" | "processing" | "completed" | "error";
   progress?: number;
   current_step?: string;
+  eta?: string;
   download_progress?: number;
   download_step?: string;
   preview_path?: string;
@@ -416,6 +419,10 @@ export function connectWebSocket(
 
 export function getVideoUrl(filename: string): string {
   return `${API_BASE}/api/videos/${filename}`;
+}
+
+export function getOutputUrl(filename: string): string {
+  return `${API_BASE}/outputs/${filename}`;
 }
 
 // =====================

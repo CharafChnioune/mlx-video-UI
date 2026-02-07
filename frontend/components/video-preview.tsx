@@ -13,19 +13,29 @@ import {
   Film,
   Sparkles,
 } from "lucide-react";
-import { getVideoUrl } from "@/lib/api";
+import { getVideoUrl, getOutputUrl } from "@/lib/api";
 
 interface VideoPreviewProps {
   videoPath?: string;
   isGenerating?: boolean;
+  previewImage?: string;
 }
 
-export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
+export function VideoPreview({ videoPath, isGenerating, previewImage }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [previewTick, setPreviewTick] = useState(0);
+
+  const previewSrc = previewImage ? `${getOutputUrl(previewImage)}?t=${previewTick}` : null;
+
+  useEffect(() => {
+    if (!isGenerating || !previewImage) return;
+    const id = window.setInterval(() => setPreviewTick((v) => v + 1), 1500);
+    return () => window.clearInterval(id);
+  }, [isGenerating, previewImage]);
 
   useEffect(() => {
     if (!videoPath || !videoRef.current) return;
@@ -103,20 +113,28 @@ export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
       <div className={`video-preview-glow rounded-xl ${videoPath ? 'animate-glow-pulse' : ''}`}>
         <div className="video-preview glass-card border border-border/50 gradient-border">
           {videoPath ? (
-            <video
-              key={videoPath}
-              ref={videoRef}
-              src={getVideoUrl(videoPath.split("/").pop() || "")}
-              className="w-full h-full rounded-lg"
-              loop
-              muted={isMuted}
-              playsInline
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-              autoPlay
-            />
+            <div className="w-full h-full relative">
+              <video
+                key={videoPath}
+                ref={videoRef}
+                src={getVideoUrl(videoPath.split("/").pop() || "")}
+                className="w-full h-full rounded-lg"
+                loop
+                muted={isMuted}
+                playsInline
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+                autoPlay
+              />
+              {isGenerating && previewSrc && (
+                <div className="absolute bottom-3 right-3 w-44 rounded-lg overflow-hidden border border-border/70 bg-background/40 backdrop-blur-sm">
+                  <div className="px-2 py-1 text-[10px] text-muted-foreground">Live preview</div>
+                  <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                </div>
+              )}
+            </div>
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center text-muted-foreground relative overflow-hidden">
               {/* Background decoration */}
@@ -126,7 +144,18 @@ export function VideoPreview({ videoPath, isGenerating }: VideoPreviewProps) {
               <div className="absolute inset-4 border-2 border-dashed border-border/30 rounded-lg animate-video-frame" />
               <div className="absolute inset-8 border border-dashed border-border/20 rounded-lg animate-video-frame" style={{ animationDelay: '0.5s' }} />
 
-              {isGenerating ? (
+              {isGenerating && previewSrc ? (
+                <div className="flex flex-col items-center gap-4 relative z-10 w-full px-6">
+                  <div className="w-full max-w-md rounded-xl overflow-hidden border border-border/70 bg-background/20">
+                    <div className="px-3 py-2 text-xs text-muted-foreground">Live preview</div>
+                    <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-foreground mb-1">Decoding frames...</p>
+                    <p className="text-xs text-muted-foreground">Preview updates while generation runs</p>
+                  </div>
+                </div>
+              ) : isGenerating ? (
                 <div className="flex flex-col items-center gap-6 relative z-10">
                   {/* Animated generation indicator */}
                   <div className="relative">
