@@ -30,6 +30,13 @@ export function ProgressIndicator({
   if (status === "idle") return null;
 
   const getCurrentStepIndex = () => {
+    const stepText = (currentStep || "").toLowerCase();
+    // Prefer semantic stage detection from backend labels (progress ranges are dynamic).
+    if (stepText.includes("saving") || stepText.includes("finaliz") || stepText.includes("mux")) return 3;
+    if (stepText.includes("decod") || stepText.includes("streaming frames")) return 2;
+    if (stepText.includes("denois") || stepText.includes("stage 1") || stepText.includes("stage 2")) return 1;
+    if (stepText.includes("load") || stepText.includes("encod")) return 0;
+
     for (let i = steps.length - 1; i >= 0; i--) {
       if (progress >= steps[i].threshold) return i;
     }
