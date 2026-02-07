@@ -172,6 +172,19 @@ export function VideoGenerator() {
     })();
   }, []);
 
+  // Prefer the final output when available (non-temp), otherwise fall back to preview/temp.
+  const pickBestVideoPath = useCallback(
+    (update: { preview_path?: string; output_path?: string }): string | undefined => {
+      const out = update.output_path;
+      if (out) {
+        const filename = out.split("/").pop() || "";
+        if (!filename.endsWith(".temp.mp4")) return out;
+      }
+      return update.preview_path || update.output_path;
+    },
+    []
+  );
+
   const enhanceDefaults: Record<EnhanceProvider, string> = {
     local: "",
     ollama: "http://127.0.0.1:11434",
@@ -402,9 +415,11 @@ export function VideoGenerator() {
         setDownloadProgress(status.download_progress);
         setDownloadStep(status.download_step);
         setError(status.error);
-        if (status.output_path) {
-          setVideoPathSafe(status.output_path);
-        }
+        const initialPath =
+          status.status === "completed"
+            ? status.output_path
+            : pickBestVideoPath({ preview_path: status.preview_path, output_path: status.output_path });
+        if (initialPath) setVideoPathSafe(initialPath);
 
         if (status.status === "processing" || status.status === "pending") {
           connectWebSocket(
@@ -420,9 +435,8 @@ export function VideoGenerator() {
                 if (update.download_step !== undefined) {
                   setDownloadStep(update.download_step);
                 }
-                if (update.output_path) {
-                  setVideoPathSafe(update.output_path);
-                }
+                const path = pickBestVideoPath(update);
+                if (path) setVideoPathSafe(path);
               } else if (update.type === "complete") {
                 setStatus("completed");
                 setProgress(100);
@@ -511,9 +525,8 @@ export function VideoGenerator() {
             if (update.download_step !== undefined) {
               setDownloadStep(update.download_step);
             }
-            if (update.output_path) {
-              setVideoPathSafe(update.output_path);
-            }
+            const path = pickBestVideoPath(update);
+            if (path) setVideoPathSafe(path);
           } else if (update.type === "complete") {
             setStatus("completed");
             setProgress(100);

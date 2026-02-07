@@ -50,6 +50,7 @@ export interface GenerationJob {
   current_step?: string;
   download_progress?: number;
   download_step?: string;
+  preview_path?: string;
   output_path?: string;
   error?: string;
 }
@@ -61,6 +62,7 @@ export interface ProgressUpdate {
   current_step?: string;
   download_progress?: number;
   download_step?: string;
+  preview_path?: string;
   output_path?: string;
   error?: string;
 }
@@ -72,6 +74,7 @@ export interface JobStatusResponse {
   current_step?: string;
   download_progress?: number;
   download_step?: string;
+  preview_path?: string;
   output_path?: string;
   error?: string;
 }

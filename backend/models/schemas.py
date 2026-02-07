@@ -97,6 +97,9 @@ class JobStatusResponse(BaseModel):
     current_step: Optional[str] = None
     download_progress: Optional[float] = None
     download_step: Optional[str] = None
+    # Preview path is typically a streamed ".temp.mp4" (no audio). The final output_path
+    # is set when generation completes (and includes audio when enabled).
+    preview_path: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -113,6 +116,7 @@ class ProgressUpdate(BaseModel):
     current_step: Optional[str] = None
     download_progress: Optional[float] = None
     download_step: Optional[str] = None
+    preview_path: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 

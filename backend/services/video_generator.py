@@ -22,6 +22,7 @@ class Job:
     current_step: str = ""
     download_progress: float = 0.0
     download_step: str = ""
+    preview_path: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
     process: Optional[asyncio.subprocess.Process] = None
@@ -242,6 +243,8 @@ class VideoGeneratorService:
                 "current_step": "Starting generation...",
                 "download_progress": job.download_progress,
                 "download_step": job.download_step,
+                "preview_path": job.preview_path,
+                "output_path": job.output_path,
             })
 
             # If auto_output_name is enabled, pass directory to let mlx_video.generate choose filename.
@@ -344,8 +347,14 @@ class VideoGeneratorService:
                         return
                     path = Path(path_str)
                     if path.exists():
-                        job.output_path = str(path)
-                        self._debug(f"{pending_output_label}: detected output_path={job.output_path}")
+                        # When streaming with audio enabled, mlx-video writes a temporary
+                        # ".temp.mp4" first (video-only), then muxes audio into the final mp4.
+                        if pending_output_label == "stream" and job.request.audio and path.name.endswith(".temp.mp4"):
+                            job.preview_path = str(path)
+                            self._debug(f"{pending_output_label}: detected preview_path={job.preview_path}")
+                        else:
+                            job.output_path = str(path)
+                            self._debug(f"{pending_output_label}: detected output_path={job.output_path}")
                     else:
                         self._debug(f"{pending_output_label}: path not found: {path_str}")
                     pending_output_context = None
@@ -384,6 +393,7 @@ class VideoGeneratorService:
                     "current_step": job.current_step,
                     "download_progress": job.download_progress,
                     "download_step": job.download_step,
+                    "preview_path": job.preview_path,
                     "output_path": job.output_path,
                 })
 
@@ -393,7 +403,13 @@ class VideoGeneratorService:
             # If auto output name, find newest mp4 in output dir
             final_output = Path(output_path)
             if auto_output_name:
-                mp4s = sorted(self.output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+                # Filter out streamed temp previews; they are video-only when audio is enabled.
+                mp4s = [
+                    p
+                    for p in self.output_dir.glob("*.mp4")
+                    if not p.name.endswith(".temp.mp4")
+                ]
+                mp4s = sorted(mp4s, key=lambda p: p.stat().st_mtime, reverse=True)
                 self._debug(f"auto_output_name detected {len(mp4s)} mp4(s) in output dir")
                 if mp4s:
                     final_output = mp4s[0]
@@ -475,6 +491,7 @@ class VideoGeneratorService:
                     "type": "complete",
                     "job_id": job_id,
                     "progress": 100,
+                    "preview_path": job.preview_path,
                     "output_path": str(final_output)
                 })
             else:
