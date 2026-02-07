@@ -36,7 +36,9 @@ app = FastAPI(
 # CORS configuration for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://0.0.0.0:3000"],
+    # Allow dynamic dev ports and Pinokio "*.localhost" domains.
+    allow_origins=[],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|[a-zA-Z0-9-]+\.localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

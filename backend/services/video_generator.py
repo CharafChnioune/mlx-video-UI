@@ -79,6 +79,11 @@ class VideoGeneratorService:
 
     def _build_command(self, request: GenerationRequest, output_path: str) -> list:
         """Build the mlx-video CLI command (mlx_video.generate)."""
+        # Resolve lazily so the API can pick up `mlx-video/.venv` even if it was
+        # created after the FastAPI process started (common in Pinokio flows).
+        self._python_cmd = self._resolve_python()
+        # Upstream `mlx_video.generate` currently expects `--fps` as an integer.
+        fps_int = int(round(float(request.fps)))
         cmd = [
             self._python_cmd, "-m", "mlx_video.generate",
             "--prompt", request.prompt,
@@ -86,7 +91,7 @@ class VideoGeneratorService:
             "--width", str(request.width),
             "--num-frames", str(request.num_frames),
             "--seed", str(request.seed),
-            "--fps", str(request.fps),
+            "--fps", str(fps_int),
             "--pipeline", request.pipeline.value,
             "--output-path", output_path,
         ]
