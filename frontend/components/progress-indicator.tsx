@@ -179,27 +179,30 @@ export function ProgressIndicator({
           <div className="flex justify-between items-center">
             {steps.map((step, index) => {
               const Icon = step.icon;
-              const isCompleted = progress >= step.threshold;
+              // Use semantic stage position, not hardcoded progress thresholds (ranges are dynamic).
+              // This block only renders for pending/processing, so `status` is narrowed here.
+              const isCompleted = index < currentStepIndex;
               const isCurrent = index === currentStepIndex;
+              const isActive = isCompleted || isCurrent;
 
               return (
                 <div key={index} className="flex flex-col items-center gap-1">
                   <div className={`
                     relative p-2 rounded-lg transition-all duration-300
-                    ${isCompleted
+                    ${isActive
                       ? isCurrent
                         ? 'bg-primary/20 text-primary'
                         : 'bg-primary/10 text-primary/70'
                       : 'bg-secondary/50 text-muted-foreground/50'
                     }
                   `}>
-                    {isCurrent && isCompleted && (
+                    {isCurrent && (
                       <div className="absolute inset-0 bg-primary rounded-lg blur-md opacity-30 animate-pulse" />
                     )}
                     <Icon className={`h-4 w-4 relative ${isCurrent ? 'animate-icon-bounce' : ''}`} />
                   </div>
                   <span className={`text-[10px] font-medium transition-colors ${
-                    isCompleted ? 'text-primary' : 'text-muted-foreground/50'
+                    isActive ? 'text-primary' : 'text-muted-foreground/50'
                   }`}>
                     {step.label}
                   </span>
