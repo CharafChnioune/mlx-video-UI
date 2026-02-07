@@ -197,58 +197,72 @@ class VideoGeneratorService:
             return f"{h}:{m:02d}:{s:02d}"
         return f"{m}:{s:02d}"
 
-    def _parse_stage_progress(self, line: str) -> tuple[Optional[str], Optional[float], Optional[str]]:
+    def _parse_rich_time_remaining(self, clean: str) -> Optional[str]:
+        """Extract Rich TimeRemainingColumn text (e.g. '0:12' or '1:02:03') if present."""
+        # Rich emits plain text with the remaining time as the last time-like token.
+        # Avoid false positives by requiring 2-digit MM (and optional 2-digit SS).
+        times = re.findall(r"\b(\d+:\d{2}(?::\d{2})?)\b", clean)
+        if not times:
+            return None
+        return times[-1]
+
+    def _parse_stage_progress(
+        self, line: str
+    ) -> tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
         """
         Parse progress signals from mlx-video output.
 
-        Returns: (stage, stage_pct, label)
+        Returns: (stage, stage_pct, label, eta)
           - stage: one of {"init","sample","decode","save"} or None
           - stage_pct: 0..100 within that stage (optional)
           - label: human readable status (optional)
+          - eta: a best-effort ETA string (optional)
         """
         clean = self._strip_ansi(line).strip()
         lowered = clean.lower()
 
         # Ignore HF/tqdm download lines in the generation progress channel.
         if lowered.startswith(("fetching", "downloading")):
-            return None, None, None
+            return None, None, None, None
         if "downloading (" in lowered or "fetching " in lowered:
-            return None, None, None
+            return None, None, None, None
 
         # Init-ish markers
         if "loading" in lowered and "model" in lowered:
-            return "init", None, "Loading model..."
+            return "init", None, "Loading model...", None
         if "text encoder loaded" in lowered or "encoding" in lowered:
-            return "init", None, "Encoding prompt..."
+            return "init", None, "Encoding prompt...", None
 
         # Sampling / denoising (rich Progress emits "Denoising ... 12/40")
         if "denois" in lowered:
             m = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+            eta = self._parse_rich_time_remaining(clean)
             if m:
                 cur, total = int(m.group(1)), int(m.group(2))
                 pct = (cur / max(1, total)) * 100.0
-                return "sample", pct, f"Denoising {cur}/{total}"
-            return "sample", None, "Denoising..."
+                return "sample", pct, f"Denoising {cur}/{total}", eta
+            return "sample", None, "Denoising...", eta
 
         # Decode / stream (rich Progress emits "Streaming frames ... 123/721")
         if "streaming frames" in lowered:
             m = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+            eta = self._parse_rich_time_remaining(clean)
             if m:
                 cur, total = int(m.group(1)), int(m.group(2))
                 pct = (cur / max(1, total)) * 100.0
-                return "decode", pct, f"Decoding frames {cur}/{total}"
-            return "decode", None, "Decoding frames..."
+                return "decode", pct, f"Decoding frames {cur}/{total}", eta
+            return "decode", None, "Decoding frames...", eta
 
         if "decoding video" in lowered:
-            return "decode", None, "Decoding video..."
+            return "decode", None, "Decoding video...", None
 
         # Save / finalize
         if "saving" in lowered or "writing" in lowered:
-            return "save", None, "Saving video..."
+            return "save", None, "Saving video...", None
         if "saved video with audio to" in lowered or ("saved video to" in lowered and "saved audio to" not in lowered):
-            return "save", 100.0, "Saving video..."
+            return "save", 100.0, "Saving video...", None
 
-        return None, None, None
+        return None, None, None, None
 
     async def start_generation(self, request: GenerationRequest) -> str:
         """Start a video generation job."""
@@ -347,18 +361,91 @@ class VideoGeneratorService:
             pending_output_context: Optional[str] = None
             pending_output_buffer = ""
             pending_output_label = ""
-            stage_ranges = {
-                "init": (0.0, 10.0),
-                "sample": (10.0, 85.0),
-                "decode": (85.0, 95.0),
-                "save": (95.0, 99.0),
-            }
+            # Progress ranges are dynamic so the "overall progress" stays meaningful across
+            # different settings. For long videos, decoding/muxing can dominate; for high step
+            # counts, denoising dominates.
+            pipeline = job.request.pipeline.value
+            is_distilled_like = pipeline != "dev"
+            distilled_stage = 1  # 1 or 2 (distilled-like pipelines)
 
-            def stage_to_overall(stage: str, pct: Optional[float]) -> float:
-                start, end = stage_ranges.get(stage, (0.0, 100.0))
-                if pct is None:
-                    return start
-                return start + (float(pct) / 100.0) * (end - start)
+            def _get_int_flag(args: list[str], flag: str, default: int) -> int:
+                try:
+                    for i, a in enumerate(args):
+                        if a == flag and i + 1 < len(args):
+                            return int(args[i + 1])
+                except Exception:
+                    pass
+                return default
+
+            extra_args = job.request.extra_args or []
+            stage1_steps = _get_int_flag(extra_args, "--stage1-steps", 8)
+            stage2_steps = _get_int_flag(extra_args, "--stage2-steps", 3)
+            dev_steps = int(job.request.steps or 40)
+
+            frames = max(1, int(job.request.num_frames))
+            h32 = max(1, int(job.request.height) // 32)
+            w32 = max(1, int(job.request.width) // 32)
+            h64 = max(1, int(job.request.height) // 64)
+            w64 = max(1, int(job.request.width) // 64)
+
+            stage2_tokens = float(frames * h32 * w32)
+            stage1_tokens = float(frames * h64 * w64)
+
+            # Heuristic: decoding each "token batch" is cheaper than a transformer step, but
+            # not negligible. Tune via env if needed.
+            decode_factor = float(os.environ.get("MLX_UI_DECODE_WEIGHT", "12"))
+
+            if is_distilled_like:
+                stage1_weight = float(stage1_steps) * stage1_tokens
+                stage2_weight = float(stage2_steps) * stage2_tokens
+                sample_weight = max(1.0, stage1_weight + stage2_weight)
+            else:
+                stage1_weight = 0.0
+                stage2_weight = 0.0
+                sample_weight = max(1.0, float(dev_steps) * stage2_tokens)
+
+            decode_weight = max(1.0, decode_factor * stage2_tokens)
+
+            init_pct = 3.0
+            save_pct = 2.0
+            remaining = max(1.0, 100.0 - init_pct - save_pct)
+            sample_pct = remaining * (sample_weight / (sample_weight + decode_weight))
+            decode_pct = remaining - sample_pct
+
+            init_end = init_pct
+            sample_start = init_end
+            sample_end = init_end + sample_pct
+            decode_start = sample_end
+            decode_end = decode_start + decode_pct
+            save_start = decode_end
+
+            def _sample_frac(pct: Optional[float]) -> float:
+                frac = 0.0 if pct is None else max(0.0, min(1.0, float(pct) / 100.0))
+                if not is_distilled_like:
+                    return frac
+                if distilled_stage <= 1:
+                    done = stage1_weight * frac
+                else:
+                    done = stage1_weight + (stage2_weight * frac)
+                return max(0.0, min(1.0, done / sample_weight))
+
+            def _decode_frac(pct: Optional[float]) -> float:
+                return 0.0 if pct is None else max(0.0, min(1.0, float(pct) / 100.0))
+
+            def stage_to_overall(stage: str, pct: Optional[float], label: Optional[str] = None) -> float:
+                if stage == "init":
+                    if label and "encoding" in label.lower():
+                        return init_end * 0.7
+                    return init_end * 0.3
+                if stage == "sample":
+                    return sample_start + _sample_frac(pct) * (sample_end - sample_start)
+                if stage == "decode":
+                    return decode_start + _decode_frac(pct) * (decode_end - decode_start)
+                if stage == "save":
+                    if pct is not None and pct >= 100.0:
+                        return 100.0
+                    return save_start
+                return 0.0
 
             buf = ""
             while True:
@@ -390,11 +477,19 @@ class VideoGeneratorService:
                             job.download_step = "Download complete"
 
                     prev_progress = job.progress
-                    stage, stage_pct, label = self._parse_stage_progress(line_str)
+                    lowered = line_str.lower()
+                    if is_distilled_like and "stage 1" in lowered:
+                        distilled_stage = 1
+                        job.current_step = "Stage 1..."
+                    if is_distilled_like and "stage 2" in lowered:
+                        distilled_stage = 2
+                        job.current_step = "Stage 2..."
+
+                    stage, stage_pct, label, stage_eta = self._parse_stage_progress(line_str)
                     if label:
                         job.current_step = label
                     if stage:
-                        overall = stage_to_overall(stage, stage_pct)
+                        overall = stage_to_overall(stage, stage_pct, label)
                         job.progress = max(job.progress, min(100.0, overall))
 
                         # Expose the streamed temp path as soon as decoding begins.
@@ -410,8 +505,12 @@ class VideoGeneratorService:
                             except Exception:
                                 pass
 
+                    # Prefer Rich ETA when available.
+                    if stage_eta:
+                        job.eta = stage_eta
+
                     # ETA (based on overall progress slope; stable enough once sampling starts).
-                    if job.progress > prev_progress + 0.01:
+                    if (not stage_eta) and job.progress > prev_progress + 0.01:
                         now = time.monotonic()
                         if job.last_progress_ts is not None:
                             dt = now - job.last_progress_ts

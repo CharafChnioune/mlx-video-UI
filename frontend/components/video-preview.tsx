@@ -28,6 +28,7 @@ export function VideoPreview({ videoPath, isGenerating, previewImage }: VideoPre
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [previewTick, setPreviewTick] = useState(0);
+  const [previewOk, setPreviewOk] = useState(false);
 
   const previewSrc = previewImage ? `${getOutputUrl(previewImage)}?t=${previewTick}` : null;
 
@@ -36,6 +37,28 @@ export function VideoPreview({ videoPath, isGenerating, previewImage }: VideoPre
     const id = window.setInterval(() => setPreviewTick((v) => v + 1), 1500);
     return () => window.clearInterval(id);
   }, [isGenerating, previewImage]);
+
+  useEffect(() => {
+    // Reset preview availability per job.
+    setPreviewOk(false);
+  }, [previewImage]);
+
+  useEffect(() => {
+    // Avoid showing a broken image icon while the preview is not yet available (404).
+    if (!isGenerating || !previewSrc || previewOk) return;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (!cancelled) setPreviewOk(true);
+    };
+    img.onerror = () => {
+      // keep trying on the next tick
+    };
+    img.src = previewSrc;
+    return () => {
+      cancelled = true;
+    };
+  }, [isGenerating, previewSrc, previewOk]);
 
   useEffect(() => {
     if (!videoPath || !videoRef.current) return;
@@ -131,7 +154,13 @@ export function VideoPreview({ videoPath, isGenerating, previewImage }: VideoPre
               {isGenerating && previewSrc && (
                 <div className="absolute bottom-3 right-3 w-44 rounded-lg overflow-hidden border border-border/70 bg-background/40 backdrop-blur-sm">
                   <div className="px-2 py-1 text-[10px] text-muted-foreground">Live preview</div>
-                  <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                  {previewOk ? (
+                    <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                  ) : (
+                    <div className="p-2 text-[10px] text-muted-foreground">
+                      Waiting for decoded frames...
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -148,7 +177,13 @@ export function VideoPreview({ videoPath, isGenerating, previewImage }: VideoPre
                 <div className="flex flex-col items-center gap-4 relative z-10 w-full px-6">
                   <div className="w-full max-w-md rounded-xl overflow-hidden border border-border/70 bg-background/20">
                     <div className="px-3 py-2 text-xs text-muted-foreground">Live preview</div>
-                    <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                    {previewOk ? (
+                      <img src={previewSrc} alt="Live preview" className="w-full h-auto block" />
+                    ) : (
+                      <div className="p-4 text-xs text-muted-foreground">
+                        Preview will appear once frames start decoding.
+                      </div>
+                    )}
                   </div>
                   <div className="text-center">
                     <p className="text-sm font-medium text-foreground mb-1">Decoding frames...</p>
