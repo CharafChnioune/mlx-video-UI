@@ -241,6 +241,11 @@ class VideoGeneratorService:
                 cur, total = int(m.group(1)), int(m.group(2))
                 pct = (cur / max(1, total)) * 100.0
                 return "sample", pct, f"Denoising {cur}/{total}", eta
+            # Fallback for Rich final-line output that only includes a percentage.
+            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", clean)
+            if pct_match:
+                pct = float(pct_match.group(1))
+                return "sample", pct, f"Denoising {pct:.0f}%", eta
             return "sample", None, "Denoising...", eta
 
         # Decode / stream (rich Progress emits "Streaming frames ... 123/721")
@@ -251,6 +256,10 @@ class VideoGeneratorService:
                 cur, total = int(m.group(1)), int(m.group(2))
                 pct = (cur / max(1, total)) * 100.0
                 return "decode", pct, f"Decoding frames {cur}/{total}", eta
+            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", clean)
+            if pct_match:
+                pct = float(pct_match.group(1))
+                return "decode", pct, f"Decoding frames {pct:.0f}%", eta
             return "decode", None, "Decoding frames...", eta
 
         if "decoding video" in lowered:
@@ -339,6 +348,13 @@ class VideoGeneratorService:
                 env={
                     **os.environ,
                     "PYTHONUNBUFFERED": "1",
+                    # Emit parseable progress lines for the UI (Rich's dynamic rendering isn't
+                    # reliable to scrape from stdout in real time).
+                    "MLX_VIDEO_PROGRESS_ECHO": os.environ.get("MLX_VIDEO_PROGRESS_ECHO", "1"),
+                    "MLX_VIDEO_PROGRESS_ECHO_EVERY": os.environ.get(
+                        "MLX_VIDEO_PROGRESS_ECHO_EVERY",
+                        os.environ.get("MLX_VIDEO_PREVIEW_EVERY", "12"),
+                    ),
                     # Live preview image updated during streaming decode. The UI polls this while
                     # generation runs (more reliable than trying to play a half-written MP4).
                     "MLX_VIDEO_PREVIEW_PATH": str(self.output_dir / f"preview_{job_id}.jpg"),
